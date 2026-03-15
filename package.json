@@ -1,0 +1,21 @@
+{
+  "name": "pixel-engine-animate",
+  "displayName": "Pixel Engine Animate",
+  "description": "Generate animation frames from the active frame with the Pixel Engine API.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Cursor"
+  },
+  "publisher": "cursor",
+  "license": "MIT",
+  "categories": [
+    "Scripts"
+  ],
+  "contributes": {
+    "scripts": [
+      {
+        "path": "./pixel-engine-animate.lua"
+      }
+    ]
+  }
+}
