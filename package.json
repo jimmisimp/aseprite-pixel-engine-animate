@@ -4,9 +4,9 @@
   "description": "Generate animation frames from the active frame with the Pixel Engine API.",
   "version": "0.1.0",
   "author": {
-    "name": "Cursor"
+    "name": "Jimmis"
   },
-  "publisher": "cursor",
+  "publisher": "Jimmis",
   "license": "MIT",
   "categories": [
     "Scripts"
