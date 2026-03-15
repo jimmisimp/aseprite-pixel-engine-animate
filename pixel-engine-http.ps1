@@ -47,109 +47,190 @@ function Write-Result {
   [System.IO.File]::WriteAllText($ResultPath, $json, $utf8NoBom)
 }
 
-try {
+function Get-RequestData {
   $request = Get-Content -Raw -Path $RequestPath | ConvertFrom-Json
   Write-Info "Loaded request file."
+  return $request
+}
 
+function Get-ImageBase64 {
   if (-not (Test-Path -LiteralPath $ImagePath)) {
     throw "Input image not found: $ImagePath"
   }
 
   $imageBytes = [System.IO.File]::ReadAllBytes($ImagePath)
-  $imageBase64 = [System.Convert]::ToBase64String($imageBytes)
   Write-Info ("Loaded input PNG (" + $imageBytes.Length + " bytes).")
+  return [System.Convert]::ToBase64String($imageBytes)
+}
 
-  $headers = @{
-    Authorization = "Bearer $($request.api_key)"
+function New-PixelEngineHeaders {
+  param(
+    [string]$ApiKey
+  )
+
+  return @{
+    Authorization = "Bearer $ApiKey"
     "Content-Type" = "application/json"
   }
+}
+
+function New-RequestBody {
+  param(
+    $Request,
+    [string]$ImageBase64
+  )
 
   $body = [ordered]@{
-    image = $imageBase64
-    prompt = $request.prompt
-    output_frames = [int]$request.output_frames
+    image = $ImageBase64
+    prompt = $Request.prompt
+    output_frames = [int]$Request.output_frames
     output_format = "spritesheet"
     pixel_config = [ordered]@{}
   }
 
-  if ($null -ne $request.palette) {
-    $body.pixel_config.palette = @($request.palette)
+  if ($null -ne $Request.palette) {
+    $body.pixel_config.palette = @($Request.palette)
     Write-Info ("Using sprite palette with " + $body.pixel_config.palette.Count + " colors.")
   }
-  elseif ($null -ne $request.colors) {
-    $body.pixel_config.colors = [int]$request.colors
+  elseif ($null -ne $Request.colors) {
+    $body.pixel_config.colors = [int]$Request.colors
     Write-Info ("Using generated palette size " + $body.pixel_config.colors + ".")
   }
   else {
     throw "Request must include either palette colors or a palette size."
   }
 
-  if ($request.negative_prompt -and $request.negative_prompt.Trim().Length -gt 0) {
-    $body.negative_prompt = $request.negative_prompt
+  if ($Request.negative_prompt -and $Request.negative_prompt.Trim().Length -gt 0) {
+    $body.negative_prompt = $Request.negative_prompt
   }
 
-  if ($request.matte_color -and $request.matte_color.Trim().Length -gt 0) {
-    $body.matte_color = $request.matte_color
+  if ($Request.matte_color -and $Request.matte_color.Trim().Length -gt 0) {
+    $body.matte_color = $Request.matte_color
   }
 
-  $submitResponse = Invoke-RestMethod `
+  return $body
+}
+
+function Submit-AnimateJob {
+  param(
+    $Headers,
+    $Body
+  )
+
+  $response = Invoke-RestMethod `
     -Method Post `
     -Uri "https://api.pixelengine.ai/functions/v1/animate" `
-    -Headers $headers `
-    -Body ($body | ConvertTo-Json -Depth 10)
+    -Headers $Headers `
+    -Body ($Body | ConvertTo-Json -Depth 10)
 
-  if (-not $submitResponse.api_job_id) {
+  if (-not $response.api_job_id) {
     throw "Pixel Engine did not return an api_job_id."
   }
 
-  $jobId = [string]$submitResponse.api_job_id
-  $status = [string]$submitResponse.status
-  $job = $null
-  Write-Info ("Submitted animate job: " + $jobId + " (" + $status + ")")
+  return $response
+}
+
+function Get-JobFailureMessage {
+  param(
+    $Job
+  )
+
+  $message = $Job.error.message
+  if (-not $message) {
+    $message = "Generation failed."
+  }
+
+  return $message
+}
+
+function Get-ProgressPercent {
+  param(
+    $Job
+  )
+
+  if ($null -eq $Job.progress) {
+    return 0
+  }
+
+  return [math]::Round(([double]$Job.progress) * 100, 1)
+}
+
+function Get-JobUpdate {
+  param(
+    [string]$AuthorizationHeader,
+    [string]$JobId
+  )
+
+  return Invoke-RestMethod `
+    -Method Get `
+    -Uri ("https://api.pixelengine.ai/functions/v1/jobs?id=" + [uri]::EscapeDataString($JobId)) `
+    -Headers @{ Authorization = $AuthorizationHeader }
+}
+
+function Wait-ForJobCompletion {
+  param(
+    [string]$AuthorizationHeader,
+    [string]$JobId,
+    [string]$InitialStatus
+  )
+
+  $status = $InitialStatus
+  Write-Info ("Submitted animate job: " + $JobId + " (" + $status + ")")
 
   while ($true) {
     Start-Sleep -Seconds 3
 
-    $job = Invoke-RestMethod `
-      -Method Get `
-      -Uri ("https://api.pixelengine.ai/functions/v1/jobs?id=" + [uri]::EscapeDataString($jobId)) `
-      -Headers @{ Authorization = $headers.Authorization }
-
+    $job = Get-JobUpdate -AuthorizationHeader $AuthorizationHeader -JobId $JobId
     $status = [string]$job.status
-    $progress = 0
-    if ($null -ne $job.progress) {
-      $progress = [math]::Round(([double]$job.progress) * 100, 1)
-    }
+    $progress = Get-ProgressPercent -Job $job
     Write-Info ("Poll status: " + $status + " (" + $progress + "%)")
 
     if ($status -eq "success") {
-      break
+      return $job
     }
 
     if ($status -eq "failure") {
-      $message = $job.error.message
-      if (-not $message) {
-        $message = "Generation failed."
-      }
-      throw $message
+      throw (Get-JobFailureMessage -Job $job)
     }
   }
+}
 
-  if (-not $job.output.url) {
+function Save-OutputImage {
+  param(
+    $Job
+  )
+
+  if (-not $Job.output.url) {
     throw "Pixel Engine job succeeded but no download URL was returned."
   }
 
-  Invoke-WebRequest -Uri $job.output.url -OutFile $OutputImagePath
+  Invoke-WebRequest -Uri $Job.output.url -OutFile $OutputImagePath
   Write-Info ("Downloaded spritesheet to " + $OutputImagePath)
-  if ($null -ne $job.output.metadata) {
-    Write-Info ("Metadata: " + ($job.output.metadata | ConvertTo-Json -Compress))
+
+  if ($null -ne $Job.output.metadata) {
+    Write-Info ("Metadata: " + ($Job.output.metadata | ConvertTo-Json -Compress))
   }
+}
+
+try {
+  $request = Get-RequestData
+  $imageBase64 = Get-ImageBase64
+  $headers = New-PixelEngineHeaders -ApiKey $request.api_key
+  $body = New-RequestBody -Request $request -ImageBase64 $imageBase64
+  $submitResponse = Submit-AnimateJob -Headers $headers -Body $body
+  $jobId = [string]$submitResponse.api_job_id
+  $job = Wait-ForJobCompletion `
+    -AuthorizationHeader $headers.Authorization `
+    -JobId $jobId `
+    -InitialStatus ([string]$submitResponse.status)
+
+  Save-OutputImage -Job $job
 
   Write-Result `
     -Ok $true `
     -Metadata $job.output.metadata `
     -JobId $jobId `
-    -Status $status `
+    -Status ([string]$job.status) `
     -ContentType $job.output.content_type
 }
 catch {
