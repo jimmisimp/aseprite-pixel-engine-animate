@@ -135,6 +135,19 @@ return function(config, support, sprite_ops)
     }
   end
 
+  local function mask_api_key(api_key)
+    local trimmed = support.trim(api_key)
+    if trimmed == "" then
+      return ""
+    end
+
+    local visible_suffix_length = math.min(4, #trimmed)
+    local visible_suffix = trimmed:sub(-visible_suffix_length)
+    local masked_prefix_length = math.max(4, #trimmed - visible_suffix_length)
+
+    return string.rep("*", masked_prefix_length) .. visible_suffix
+  end
+
   local function persist_preferences(preferences, values)
     preferences.api_key = values.api_key
     preferences.prompt = values.prompt
@@ -147,11 +160,12 @@ return function(config, support, sprite_ops)
 
   local function build_dialog(initial_values)
     local dialog = Dialog(config.COMMAND_TITLE)
+    local masked_api_key = mask_api_key(initial_values.api_key)
 
     dialog:entry{
       id = "api_key",
       label = "API Key",
-      text = initial_values.api_key,
+      text = masked_api_key,
       focus = (initial_values.api_key == "")
     }
     dialog:newrow()
@@ -209,6 +223,7 @@ return function(config, support, sprite_ops)
   end
 
   local function parse_dialog_values(data, initial_values, env_api_key)
+    local masked_api_key = mask_api_key(initial_values.api_key)
     local values = {
       api_key = support.trim(data.api_key),
       prompt = support.trim(data.prompt),
@@ -220,6 +235,10 @@ return function(config, support, sprite_ops)
       use_index_colors = data.use_index_colors and true or false,
       palette_size = tostring(data.palette_size or initial_values.palette_size)
     }
+
+    if initial_values.api_key ~= "" and values.api_key == masked_api_key then
+      values.api_key = initial_values.api_key
+    end
 
     if values.api_key == "" and env_api_key then
       values.api_key = env_api_key
