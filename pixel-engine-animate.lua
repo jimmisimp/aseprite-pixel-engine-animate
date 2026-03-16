@@ -10,8 +10,9 @@ function init(plugin)
   local config = load_module(plugin, "lib/pixel_engine/config.lua")
   local support = load_module(plugin, "lib/pixel_engine/support.lua")(config)
   local sprite_ops = load_module(plugin, "lib/pixel_engine/sprite_ops.lua")(config, support)
+  local prompt_enhance = load_module(plugin, "lib/pixel_engine/prompt_enhance.lua")(config, support)
 
-  command_module = load_module(plugin, "lib/pixel_engine/animate_command.lua")(config, support, sprite_ops)
+  command_module = load_module(plugin, "lib/pixel_engine/animate_command.lua")(config, support, sprite_ops, prompt_enhance)
   command_module.init(plugin)
 end
 

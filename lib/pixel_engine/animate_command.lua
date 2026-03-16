@@ -1,4 +1,4 @@
-return function(config, support, sprite_ops)
+return function(config, support, sprite_ops, prompt_enhance)
   local command = {}
 
   local function is_valid_palette_size(value)
@@ -106,8 +106,11 @@ return function(config, support, sprite_ops)
   local function build_temp_paths(temp_dir, plugin_path)
     return {
       helper = app.fs.joinPath(plugin_path, config.HELPER_SCRIPT_NAME),
+      openai_helper = app.fs.joinPath(plugin_path, config.OPENAI_HELPER_SCRIPT_NAME),
       request = app.fs.joinPath(temp_dir, config.TEMP_FILES.request),
       input = app.fs.joinPath(temp_dir, config.TEMP_FILES.input),
+      openai_request = app.fs.joinPath(temp_dir, config.TEMP_FILES.openai_request),
+      openai_result = app.fs.joinPath(temp_dir, config.TEMP_FILES.openai_result),
       result = app.fs.joinPath(temp_dir, config.TEMP_FILES.result),
       output = app.fs.joinPath(temp_dir, config.TEMP_FILES.output)
     }
@@ -130,6 +133,7 @@ return function(config, support, sprite_ops)
       negative_prompt = preferences.negative_prompt or "",
       output_frames = tonumber(preferences.output_frames) or config.DEFAULT_FRAMES,
       matte_color = preferences.matte_color or config.DEFAULT_MATTE_COLOR,
+      enhance_prompt = preferences.enhance_prompt and true or false,
       use_index_colors = use_index_colors,
       palette_size = palette_size
     }
@@ -154,6 +158,7 @@ return function(config, support, sprite_ops)
     preferences.negative_prompt = values.negative_prompt
     preferences.output_frames = values.output_frames
     preferences.matte_color = values.matte_color
+    preferences.enhance_prompt = values.enhance_prompt
     preferences.use_index_colors = values.use_index_colors
     preferences.palette_size = values.palette_size
   end
@@ -162,42 +167,50 @@ return function(config, support, sprite_ops)
     local dialog = Dialog(config.COMMAND_TITLE)
     local masked_api_key = mask_api_key(initial_values.api_key)
 
+    dialog:newrow{ always=true }
     dialog:entry{
       id = "api_key",
       label = "API Key",
       text = masked_api_key,
       focus = (initial_values.api_key == "")
     }
-    dialog:newrow()
     dialog:entry{
       id = "prompt",
       label = "Prompt",
       text = initial_values.prompt,
       focus = (initial_values.api_key ~= "")
     }
-    dialog:newrow()
     dialog:entry{
       id = "negative_prompt",
       label = "Negative",
       text = initial_values.negative_prompt
     }
-    dialog:newrow()
-    dialog:color{
-      id = "matte_color",
-      label = "Matte",
-      color = support.hex_to_color(initial_values.matte_color, config.DEFAULT_MATTE_COLOR)
+    dialog:check{
+      id = "enhance_prompt",
+      text = "Enhance prompt",
+      selected = initial_values.enhance_prompt
     }
-    dialog:newrow()
     dialog:number{
       id = "output_frames",
       label = "Frames",
       text = tostring(initial_values.output_frames),
       decimals = 0
     }
-    dialog:newrow()
+    dialog:separator()
+    dialog:color{
+      id = "matte_color",
+      label = "Matte",
+      color = support.hex_to_color(initial_values.matte_color, config.DEFAULT_MATTE_COLOR)
+    }
+    dialog:combobox{
+      id = "palette_size",
+      label = "Palette Size",
+      option = initial_values.palette_size,
+      options = config.PALETTE_SIZE_OPTIONS,
+      enabled = not initial_values.use_index_colors
+    }
     dialog:check{
       id = "use_index_colors",
-      label = "Colors",
       text = "Use index colors",
       selected = initial_values.use_index_colors,
       onclick = function()
@@ -207,15 +220,7 @@ return function(config, support, sprite_ops)
         }
       end
     }
-    dialog:newrow()
-    dialog:combobox{
-      id = "palette_size",
-      label = "Palette Size",
-      option = initial_values.palette_size,
-      options = config.PALETTE_SIZE_OPTIONS,
-      enabled = not initial_values.use_index_colors
-    }
-    dialog:newrow()
+    dialog:newrow{ always=false }
     dialog:button{ id = "ok", text = "Generate", focus = true }
     dialog:button{ id = "cancel", text = "Cancel" }
 
@@ -232,6 +237,7 @@ return function(config, support, sprite_ops)
       matte_color = support.color_to_hex(
         data.matte_color or support.hex_to_color(initial_values.matte_color, config.DEFAULT_MATTE_COLOR)
       ),
+      enhance_prompt = data.enhance_prompt and true or false,
       use_index_colors = data.use_index_colors and true or false,
       palette_size = tostring(data.palette_size or initial_values.palette_size)
     }
@@ -281,6 +287,17 @@ return function(config, support, sprite_ops)
       app.tip("Rendering current frame...", 2)
       sprite_ops.render_active_frame(sprite, current_frame.frameNumber, paths.input)
 
+      local pixel_engine_prompt = values.prompt
+      if values.enhance_prompt then
+        app.tip("Enhancing prompt with OpenAI...", 2)
+        pixel_engine_prompt = prompt_enhance.enhance(plugin.path, {
+          helper = paths.openai_helper,
+          request = paths.openai_request,
+          result = paths.openai_result,
+          image = paths.input
+        }, values.prompt)
+      end
+
       local palette_value = values.palette_size
       if values.use_index_colors then
         palette_value = sprite_ops.collect_palette_colors(sprite)
@@ -290,7 +307,7 @@ return function(config, support, sprite_ops)
         paths.request,
         build_request_json(
           values.api_key,
-          values.prompt,
+          pixel_engine_prompt,
           values.negative_prompt,
           values.output_frames,
           values.matte_color,
@@ -315,7 +332,14 @@ return function(config, support, sprite_ops)
       }
     end)
 
-    support.cleanup_temp_dir(temp_dir, { paths.request, paths.input, paths.result, paths.output })
+    support.cleanup_temp_dir(temp_dir, {
+      paths.request,
+      paths.input,
+      paths.openai_request,
+      paths.openai_result,
+      paths.result,
+      paths.output
+    })
 
     if not ok then
       support.log("Generation failed: " .. tostring(result_or_error))
@@ -342,6 +366,10 @@ return function(config, support, sprite_ops)
 
     if plugin.preferences.matte_color == nil then
       plugin.preferences.matte_color = config.DEFAULT_MATTE_COLOR
+    end
+
+    if plugin.preferences.enhance_prompt == nil then
+      plugin.preferences.enhance_prompt = false
     end
 
     plugin:newCommand{

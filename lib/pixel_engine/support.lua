@@ -78,7 +78,7 @@ return function(config)
     return Color{ r = 238, g = 0, b = 255 }
   end
 
-  function support.read_env_key(plugin_path)
+  function support.read_env_value(plugin_path, env_key)
     local env_path = app.fs.joinPath(plugin_path, config.ENV_FILE_NAME)
     if not app.fs.isFile(env_path) then
       return nil
@@ -87,7 +87,7 @@ return function(config)
     local content = support.read_text_file(env_path)
     for line in content:gmatch("[^\r\n]+") do
       local key, value = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
-      if key == config.ENV_API_KEY then
+      if key == env_key then
         local parsed = support.parse_env_value(value)
         if parsed ~= "" then
           return parsed
@@ -96,6 +96,10 @@ return function(config)
     end
 
     return nil
+  end
+
+  function support.read_env_key(plugin_path)
+    return support.read_env_value(plugin_path, config.ENV_API_KEY)
   end
 
   function support.remove_if_exists(path)
