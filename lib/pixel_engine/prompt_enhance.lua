@@ -1,14 +1,14 @@
 return function(config, support)
   local prompt_enhance = {}
 
-  local ENHANCE_PROMPT = "Rewrite the input into a high-quality pixel-art animation prompt. Preserve the original idea, but expand it into a visually precise description of the subject, motion, surface/material changes, lighting, and looping secondary effects. Use animator-friendly language that describes exactly what moves, how it moves, and what remains still. Avoid camera language and technical jargon. Output a single polished sentence."
+  local ENHANCE_PROMPT = "Rewrite the input into a high-quality pixel-art animation prompt. Preserve the original idea, but expand it into a visually precise description of the subject, motion, surface/material changes, lighting, and looping secondary effects. Use animator-friendly language that describes exactly what moves, how it moves, and what remains still. Avoid camera language and technical jargon. Output a single polished sentence. Never include quotes, apostrphies, or other characters which may cause issues in JSON."
 
   local function build_request_json(api_key, model, prompt)
     return json.encode{
       api_key = api_key,
       model = model,
-      instructions = ENHANCE_PROMPT,
-      prompt = prompt
+      instructions = support.normalize_json_text(ENHANCE_PROMPT),
+      prompt = support.normalize_json_text(prompt)
     }
   end
 
@@ -38,7 +38,7 @@ return function(config, support)
       support.fail(result.error or "OpenAI prompt enhancement failed.")
     end
 
-    local prompt = support.trim(result.prompt)
+    local prompt = support.trim(support.normalize_json_text(result.prompt))
     if prompt == "" then
       support.fail("OpenAI prompt enhancement returned an empty prompt.")
     end

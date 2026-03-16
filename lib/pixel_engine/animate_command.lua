@@ -50,8 +50,8 @@ return function(config, support, sprite_ops, prompt_enhance)
   local function build_request_json(api_key, prompt, negative_prompt, output_frames, matte_color, use_index_colors, palette_value)
     local payload = {
       api_key = api_key,
-      prompt = prompt,
-      negative_prompt = negative_prompt,
+      prompt = support.normalize_json_text(prompt),
+      negative_prompt = support.normalize_json_text(negative_prompt),
       output_frames = output_frames,
       matte_color = matte_color
     }
@@ -328,7 +328,8 @@ return function(config, support, sprite_ops, prompt_enhance)
       return {
         layer_name = layer_name,
         imported_frames = imported_frames,
-        api_job_id = result.api_job_id
+        api_job_id = result.api_job_id,
+        enhanced_prompt = values.enhance_prompt and pixel_engine_prompt or nil
       }
     end)
 
@@ -350,12 +351,22 @@ return function(config, support, sprite_ops, prompt_enhance)
       return
     end
 
+    local alert_text = {
+      "Imported " .. result_or_error.imported_frames .. " frames into layer '" .. result_or_error.layer_name .. "'.",
+      "Job ID: " .. tostring(result_or_error.api_job_id)
+    }
+
+    if result_or_error.enhanced_prompt and result_or_error.enhanced_prompt ~= "" then
+      table.insert(alert_text, "Enhanced prompt:")
+
+      for _, line in ipairs(support.wrap_text(result_or_error.enhanced_prompt, 64)) do
+        table.insert(alert_text, line)
+      end
+    end
+
     app.alert{
       title = config.COMMAND_TITLE,
-      text = {
-        "Imported " .. result_or_error.imported_frames .. " frames into layer '" .. result_or_error.layer_name .. "'.",
-        "Job ID: " .. tostring(result_or_error.api_job_id)
-      }
+      text = alert_text
     }
   end
 
