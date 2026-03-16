@@ -38,6 +38,60 @@ return function(config)
     return (tostring(value or ""):match("^%s*(.-)%s*$"))
   end
 
+  function support.normalize_json_text(value)
+    local text = tostring(value or "")
+    text = text:gsub("\r\n", "\n")
+    text = text:gsub("\r", "\n")
+    text = text:gsub("[%z\1-\8\11\12\14-\31]", "")
+    return text
+  end
+
+  function support.wrap_text(value, max_length)
+    local text = support.normalize_json_text(value)
+    local limit = math.max(1, tonumber(max_length) or 1)
+    local lines = {}
+
+    for paragraph in (text .. "\n"):gmatch("(.-)\n") do
+      if paragraph == "" then
+        if #lines == 0 or lines[#lines] ~= "" then
+          table.insert(lines, "")
+        end
+      else
+        local current = ""
+
+        for word in paragraph:gmatch("%S+") do
+          if current == "" then
+            current = word
+          elseif #current + 1 + #word <= limit then
+            current = current .. " " .. word
+          else
+            table.insert(lines, current)
+            current = word
+          end
+
+          while #current > limit do
+            table.insert(lines, current:sub(1, limit))
+            current = current:sub(limit + 1)
+          end
+        end
+
+        if current ~= "" then
+          table.insert(lines, current)
+        end
+      end
+    end
+
+    if #lines > 0 and lines[#lines] == "" then
+      table.remove(lines, #lines)
+    end
+
+    if #lines == 0 then
+      return { "" }
+    end
+
+    return lines
+  end
+
   function support.parse_env_value(value)
     value = support.trim(value)
     if value == "" then
