@@ -2,6 +2,9 @@
 
 An Aseprite extension that sends the active frame to the Pixel Engine Animate API and imports the returned spritesheet as a new animation layer.
 
+![UI Example](assets/ui-example.gif)
+
+
 ## Requirements
 
 - [Aseprite](https://www.aseprite.org/) with extensions enabled
