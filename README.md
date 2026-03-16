@@ -1,6 +1,6 @@
 # Pixel Engine Animate
 
-An Aseprite extension that sends the active frame to the Pixel Engine Animate API and imports the returned spritesheet as a new animation layer.
+An Aseprite extension that sends the active frame to the [Pixel Engine](https://pixelengine.ai/) Animate API and imports the returned spritesheet as a new animation layer.
 
 ![UI Example](assets/ui-example.gif)
 
@@ -31,10 +31,13 @@ OPENAI_API_KEY=sk-your-key-here
 OPENAI_MODEL=gpt-5-mini-2025-08-07
 ```
 
+> **Note** 
+> You can modify the default prompt in `lib/openai/prompt_enhance.lua`.
+
 ## Use
 
 1. Open a sprite and select the frame you want to animate.
-2. Run `File > Scripts > Pixel Engine Animate`.
+2. Run `File > Pixel Engine Animate`.
 3. Enter a prompt, optional negative prompt, matte color, and the number of output frames.
 4. Optional: enable `Enhance prompt with image` to send your prompt plus the active frame to OpenAI before the Pixel Engine request.
 5. Choose either:
@@ -42,7 +45,8 @@ OPENAI_MODEL=gpt-5-mini-2025-08-07
    - `Palette Size` to let Pixel Engine generate a palette
 6. Click `Generate`.
 
-> Note: You'll have to allow the extension to run PowerShell scripts the first time you run it.
+> **Note** 
+> You will be asked to allow the extension to run PowerShell scripts on the first run.
 
 The extension exports the active frame to a temporary PNG, waits for Pixel Engine to finish, downloads the spritesheet, and imports each frame into a new layer named `Animation`.
 
@@ -57,6 +61,8 @@ The extension exports the active frame to a temporary PNG, waits for Pixel Engin
 ## Repo layout
 
 - `pixel-engine-animate.lua`: extension entrypoint
-- `lib/pixel_engine/`: Lua modules for config, shared helpers, sprite handling, and command flow
-- `pixel-engine-http.ps1`: PowerShell helper that calls the Pixel Engine API
-- `openai-prompt-enhance.ps1`: PowerShell helper that calls the OpenAI Responses API for optional prompt enhancement
+- `lib/pixel_engine/`: Lua modules for config, sprite handling, and command flow
+- `lib/openai/`: Lua modules for prompt enhancement config and helper
+- `lib/utils/`: Lua modules for shared helpers
+- `scripts/pixel-engine-http.ps1`: PowerShell helper that calls the Pixel Engine API
+- `scripts/openai-prompt-enhance.ps1`: PowerShell helper that calls the OpenAI Responses API for optional prompt enhancement
