@@ -4,7 +4,7 @@ An Aseprite extension that sends the active frame to the Pixel Engine Animate AP
 
 ## Requirements
 
-- Aseprite with extensions enabled
+- [Aseprite](https://www.aseprite.org/) with extensions enabled
 - Windows with `powershell.exe` available
 - A [Pixel Engine API key](https://pixelengine.ai/account?tab=api)
 
