@@ -6,7 +6,7 @@ An Aseprite extension that sends the active frame to the Pixel Engine Animate AP
 
 - Aseprite with extensions enabled
 - Windows with `powershell.exe` available
-- A Pixel Engine API key
+- A [Pixel Engine API key](https://pixelengine.ai/account?tab=api)
 
 ## Install
 
