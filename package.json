@@ -2,7 +2,7 @@
   "name": "pixel-engine-animate",
   "displayName": "Pixel Engine Animate",
   "description": "Generate animation frames from the active frame with the Pixel Engine API.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Jimmis"
   },
