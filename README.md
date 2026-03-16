@@ -24,13 +24,17 @@ ASEPRITE_KEY=pe_sk_your_key_here
 
 You can also paste the API key into the dialog. The extension remembers the last values you used in Aseprite's local preferences.
 
-5. Prompt enhancement uses Pixel Engine's `/enhance-prompt` endpoint by default. To keep the previous OpenAI-based flow, add:
+
+## Prompt Enhancement
+
+Prompt enhancement uses Pixel Engine's `/enhance-prompt` endpoint by default.
+You can also use a custom prompt enhancement flow by adding:
 
 ```env
 USE_CUSTOM_ENHANCE=true
 ```
 
-6. If you enable the custom flow, also add:
+If you enabled, you will also need to add your OpenAI API key:
 
 ```env
 OPENAI_API_KEY=sk-your-key-here
@@ -38,7 +42,7 @@ OPENAI_MODEL=gpt-5-mini-2025-08-07
 ```
 
 > **Note** 
-> If you enable the legacy custom flow, you can modify its default rewrite prompt in `lib/openai/prompt_enhance.lua`.
+> You can modify the custom rewrite prompt in `lib/openai/prompt_enhance.lua`.
 
 ## Use
 
@@ -72,4 +76,4 @@ The extension exports the active frame to a temporary PNG, waits for Pixel Engin
 - `lib/utils/`: Lua modules for shared helpers
 - `scripts/pixel-engine-http.ps1`: PowerShell helper that calls the Pixel Engine API
 - `scripts/pixel-engine-enhance-prompt.ps1`: PowerShell helper that calls Pixel Engine's `/enhance-prompt` endpoint
-- `scripts/openai-prompt-enhance.ps1`: PowerShell helper for the optional legacy OpenAI prompt enhancement flow
+- `scripts/openai-prompt-enhance.ps1`: PowerShell helper for the optional OpenAI prompt enhancement flow
