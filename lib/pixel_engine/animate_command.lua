@@ -106,11 +106,12 @@ return function(config, support, sprite_ops, prompt_enhance)
   local function build_temp_paths(temp_dir, plugin_path)
     return {
       helper = app.fs.joinPath(plugin_path, config.HELPER_SCRIPT_NAME),
+      enhance_helper = app.fs.joinPath(plugin_path, config.ENHANCE_HELPER_SCRIPT_NAME),
       openai_helper = app.fs.joinPath(plugin_path, config.OPENAI_HELPER_SCRIPT_NAME),
       request = app.fs.joinPath(temp_dir, config.TEMP_FILES.request),
       input = app.fs.joinPath(temp_dir, config.TEMP_FILES.input),
-      openai_request = app.fs.joinPath(temp_dir, config.TEMP_FILES.openai_request),
-      openai_result = app.fs.joinPath(temp_dir, config.TEMP_FILES.openai_result),
+      enhance_request = app.fs.joinPath(temp_dir, config.TEMP_FILES.enhance_request),
+      enhance_result = app.fs.joinPath(temp_dir, config.TEMP_FILES.enhance_result),
       result = app.fs.joinPath(temp_dir, config.TEMP_FILES.result),
       output = app.fs.joinPath(temp_dir, config.TEMP_FILES.output)
     }
@@ -289,13 +290,14 @@ return function(config, support, sprite_ops, prompt_enhance)
 
       local pixel_engine_prompt = values.prompt
       if values.enhance_prompt then
-        app.tip("Enhancing prompt with OpenAI...", 2)
+        app.tip("Enhancing prompt...", 2)
         pixel_engine_prompt = prompt_enhance.enhance(plugin.path, {
-          helper = paths.openai_helper,
-          request = paths.openai_request,
-          result = paths.openai_result,
+          helper = paths.enhance_helper,
+          openai_helper = paths.openai_helper,
+          request = paths.enhance_request,
+          result = paths.enhance_result,
           image = paths.input
-        }, values.prompt)
+        }, values.prompt, values.api_key)
       end
 
       local palette_value = values.palette_size
@@ -336,8 +338,8 @@ return function(config, support, sprite_ops, prompt_enhance)
     support.cleanup_temp_dir(temp_dir, {
       paths.request,
       paths.input,
-      paths.openai_request,
-      paths.openai_result,
+      paths.enhance_request,
+      paths.enhance_result,
       paths.result,
       paths.output
     })

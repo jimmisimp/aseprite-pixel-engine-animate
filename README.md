@@ -24,7 +24,13 @@ ASEPRITE_KEY=pe_sk_your_key_here
 
 You can also paste the API key into the dialog. The extension remembers the last values you used in Aseprite's local preferences.
 
-5. Optional: enable prompt enhancement with OpenAI by adding:
+5. Prompt enhancement uses Pixel Engine's `/enhance-prompt` endpoint by default. To keep the previous OpenAI-based flow, add:
+
+```env
+USE_CUSTOM_ENHANCE=true
+```
+
+6. If you enable the custom flow, also add:
 
 ```env
 OPENAI_API_KEY=sk-your-key-here
@@ -32,14 +38,14 @@ OPENAI_MODEL=gpt-5-mini-2025-08-07
 ```
 
 > **Note** 
-> You can modify the default prompt in `lib/openai/prompt_enhance.lua`.
+> If you enable the legacy custom flow, you can modify its default rewrite prompt in `lib/openai/prompt_enhance.lua`.
 
 ## Use
 
 1. Open a sprite and select the frame you want to animate.
 2. Run `File > Pixel Engine Animate`.
 3. Enter a prompt, optional negative prompt, matte color, and the number of output frames.
-4. Optional: enable `Enhance prompt with image` to send your prompt plus the active frame to OpenAI before the Pixel Engine request.
+4. Optional: enable `Enhance prompt` to send your prompt plus the active frame to Pixel Engine's prompt enhancement endpoint before the animate request.
 5. Choose either:
    - `Use index colors` to send the sprite palette directly
    - `Palette Size` to let Pixel Engine generate a palette
@@ -65,4 +71,5 @@ The extension exports the active frame to a temporary PNG, waits for Pixel Engin
 - `lib/openai/`: Lua modules for prompt enhancement config and helper
 - `lib/utils/`: Lua modules for shared helpers
 - `scripts/pixel-engine-http.ps1`: PowerShell helper that calls the Pixel Engine API
-- `scripts/openai-prompt-enhance.ps1`: PowerShell helper that calls the OpenAI Responses API for optional prompt enhancement
+- `scripts/pixel-engine-enhance-prompt.ps1`: PowerShell helper that calls Pixel Engine's `/enhance-prompt` endpoint
+- `scripts/openai-prompt-enhance.ps1`: PowerShell helper for the optional legacy OpenAI prompt enhancement flow

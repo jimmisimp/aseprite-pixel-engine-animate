@@ -6,9 +6,11 @@ return {
   TEMP_DIR_PREFIX = "pixel-engine-animate",
   ENV_FILE_NAME = ".env",
   ENV_API_KEY = "ASEPRITE_KEY",
+  ENV_USE_CUSTOM_ENHANCE = "USE_CUSTOM_ENHANCE",
   ENV_OPENAI_API_KEY = "OPENAI_API_KEY",
   ENV_OPENAI_MODEL = "OPENAI_MODEL",
   HELPER_SCRIPT_NAME = "scripts/pixel-engine-http.ps1",
+  ENHANCE_HELPER_SCRIPT_NAME = "scripts/pixel-engine-enhance-prompt.ps1",
   OPENAI_HELPER_SCRIPT_NAME = "scripts/openai-prompt-enhance.ps1",
   DEFAULT_FRAMES = 8,
   DEFAULT_FPS = 8,
@@ -18,8 +20,8 @@ return {
   TEMP_FILES = {
     request = "request.json",
     input = "input.png",
-    openai_request = "openai-request.json",
-    openai_result = "openai-result.json",
+    enhance_request = "enhance-request.json",
+    enhance_result = "enhance-result.json",
     result = "result.json",
     output = "output.png"
   }

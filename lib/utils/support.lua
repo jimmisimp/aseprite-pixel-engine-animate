@@ -106,6 +106,11 @@ return function(config)
     return value
   end
 
+  function support.parse_env_bool(value)
+    local normalized = support.parse_env_value(value):lower()
+    return normalized == "1" or normalized == "true" or normalized == "yes" or normalized == "on"
+  end
+
   function support.color_to_hex(color)
     return string.format("#%02X%02X%02X", color.red, color.green, color.blue)
   end
@@ -150,6 +155,23 @@ return function(config)
     end
 
     return nil
+  end
+
+  function support.read_env_bool(plugin_path, env_key)
+    local env_path = app.fs.joinPath(plugin_path, config.ENV_FILE_NAME)
+    if not app.fs.isFile(env_path) then
+      return false
+    end
+
+    local content = support.read_text_file(env_path)
+    for line in content:gmatch("[^\r\n]+") do
+      local key, value = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+      if key == env_key then
+        return support.parse_env_bool(value)
+      end
+    end
+
+    return false
   end
 
   function support.read_env_key(plugin_path)
