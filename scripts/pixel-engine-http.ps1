@@ -14,12 +14,73 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$script:PeProgressId = 0
+$script:PePollTick = 0
+
+function Stop-PeProgress {
+  Write-Progress -Id $script:PeProgressId -Activity " " -Completed
+}
+
 function Write-Info {
   param(
-    [string]$Message
+    [string]$Message,
+    [ValidateSet("Default", "Dim", "Ok", "Warn", "Err")]
+    [string]$Tone = "Default"
   )
 
-  Write-Host "[Pixel Engine] $Message"
+  $label = "Pixel Engine"
+  switch ($Tone) {
+    "Dim" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor DarkGray -NoNewline
+      Write-Host "  $Message" -ForegroundColor DarkGray
+    }
+    "Ok" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  " -NoNewline
+      Write-Host "+ " -ForegroundColor Green -NoNewline
+      Write-Host $Message
+    }
+    "Warn" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  " -NoNewline
+      Write-Host "! " -ForegroundColor Yellow -NoNewline
+      Write-Host $Message
+    }
+    "Err" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  " -NoNewline
+      Write-Host "x " -ForegroundColor Red -NoNewline
+      Write-Host $Message -ForegroundColor Red
+    }
+    default {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  $Message"
+    }
+  }
+}
+
+function Write-PeProgress {
+  param(
+    [string]$Status,
+    [string]$CurrentOperation = "",
+    $PercentComplete = $null
+  )
+
+  $params = @{
+    Id               = $script:PeProgressId
+    Activity         = "Pixel Engine - Animate"
+    Status           = $Status
+    CurrentOperation = $CurrentOperation
+  }
+  if ($null -ne $PercentComplete) {
+    $params.PercentComplete = [math]::Max(0, [math]::Min(100, [int]$PercentComplete))
+  }
+  Write-Progress @params
 }
 
 function Write-Result {
@@ -49,7 +110,7 @@ function Write-Result {
 
 function Get-RequestData {
   $request = Get-Content -Raw -Path $RequestPath | ConvertFrom-Json
-  Write-Info "Loaded request file."
+  Write-Info "Loaded request file." -Tone Ok
   return $request
 }
 
@@ -59,7 +120,7 @@ function Get-ImageBase64 {
   }
 
   $imageBytes = [System.IO.File]::ReadAllBytes($ImagePath)
-  Write-Info ("Loaded input PNG (" + $imageBytes.Length + " bytes).")
+  Write-Info ("Loaded input PNG (" + $imageBytes.Length + " bytes).") -Tone Ok
   return [System.Convert]::ToBase64String($imageBytes)
 }
 
@@ -117,6 +178,11 @@ function Submit-AnimateJob {
     $Body
   )
 
+  Write-PeProgress `
+    -Status "Submitting animation job..." `
+    -CurrentOperation "Sending image and prompt to Pixel Engine" `
+    -PercentComplete 0
+
   $response = Invoke-RestMethod `
     -Method Post `
     -Uri "https://api.pixelengine.ai/functions/v1/animate" `
@@ -155,6 +221,21 @@ function Get-ProgressPercent {
   return [math]::Round(([double]$Job.progress) * 100, 1)
 }
 
+function Get-DisplayJobStatus {
+  param(
+    [string]$Status,
+    [double]$ProgressPercent
+  )
+
+  if ($Status -eq "pending" -and $ProgressPercent -eq 0) {
+    return "waiting"
+  } elseif ($Status -eq "pending") {
+    return "processing"
+  }
+
+  return $Status
+}
+
 function Get-JobUpdate {
   param(
     [string]$AuthorizationHeader,
@@ -175,15 +256,30 @@ function Wait-ForJobCompletion {
   )
 
   $status = $InitialStatus
-  Write-Info ("Submitted animate job: " + $JobId + " (" + $status + ")")
+  $progress = 0
+  $shortId = $JobId.Substring(0, [Math]::Min(8, $JobId.Length))
+  Write-Info ("Job submitted - id " + $shortId + "... - " + (Get-DisplayJobStatus -Status $status -ProgressPercent $progress)) -Tone Ok
+
+  $spin = @("|", "/", "-", "\")
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
   while ($true) {
+    $ch = $spin[$script:PePollTick % $spin.Length]
+    $script:PePollTick++
+    $elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 0)
+    $pct = [int][math]::Round($progress)
+    $displayStatus = Get-DisplayJobStatus -Status $status -ProgressPercent $progress
+
+    Write-PeProgress `
+      -Status ($displayStatus + " - " + $progress + "% - " + $elapsed + "s elapsed") `
+      -CurrentOperation ($ch + " Waiting for Pixel Engine (job " + $shortId + "...)") `
+      -PercentComplete $pct
+
     Start-Sleep -Seconds 3
 
     $job = Get-JobUpdate -AuthorizationHeader $AuthorizationHeader -JobId $JobId
     $status = [string]$job.status
     $progress = Get-ProgressPercent -Job $job
-    Write-Info ("Poll status: " + $status + " (" + $progress + "%)")
 
     if ($status -eq "success") {
       return $job
@@ -204,11 +300,16 @@ function Save-OutputImage {
     throw "Pixel Engine job succeeded but no download URL was returned."
   }
 
+  Write-PeProgress `
+    -Status "Downloading spritesheet..." `
+    -CurrentOperation $OutputImagePath `
+    -PercentComplete 95
+
   Invoke-WebRequest -Uri $Job.output.url -OutFile $OutputImagePath
-  Write-Info ("Downloaded spritesheet to " + $OutputImagePath)
+  Write-Info ("Saved spritesheet to " + $OutputImagePath) -Tone Ok
 
   if ($null -ne $Job.output.metadata) {
-    Write-Info ("Metadata: " + ($Job.output.metadata | ConvertTo-Json -Compress))
+    Write-Info ("Metadata: " + ($Job.output.metadata | ConvertTo-Json -Compress)) -Tone Dim
   }
 }
 
@@ -226,6 +327,9 @@ try {
 
   Save-OutputImage -Job $job
 
+  Write-PeProgress -Status "Done" -CurrentOperation "Animation saved" -PercentComplete 100
+  Write-Info "Animation complete." -Tone Ok
+
   Write-Result `
     -Ok $true `
     -Metadata $job.output.metadata `
@@ -239,7 +343,10 @@ catch {
     $message = "Unknown Pixel Engine error."
   }
 
-  Write-Info ("Error: " + $message)
+  Write-Info $message -Tone Err
   Write-Result -Ok $false -ErrorMessage $message
   exit 1
+}
+finally {
+  Stop-PeProgress
 }

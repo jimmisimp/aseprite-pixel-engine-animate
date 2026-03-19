@@ -13,10 +13,45 @@ $ErrorActionPreference = "Stop"
 
 function Write-Info {
   param(
-    [string]$Message
+    [string]$Message,
+    [ValidateSet("Default", "Dim", "Ok", "Warn", "Err")]
+    [string]$Tone = "Default"
   )
 
-  Write-Host "[Pixel Engine] $Message"
+  $label = "Pixel Engine"
+  switch ($Tone) {
+    "Dim" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor DarkGray -NoNewline
+      Write-Host "  $Message" -ForegroundColor DarkGray
+    }
+    "Ok" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  " -NoNewline
+      Write-Host "+ " -ForegroundColor Green -NoNewline
+      Write-Host $Message
+    }
+    "Warn" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  " -NoNewline
+      Write-Host "! " -ForegroundColor Yellow -NoNewline
+      Write-Host $Message
+    }
+    "Err" {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  " -NoNewline
+      Write-Host "x " -ForegroundColor Red -NoNewline
+      Write-Host $Message -ForegroundColor Red
+    }
+    default {
+      Write-Host "  " -NoNewline
+      Write-Host $label -ForegroundColor Cyan -NoNewline
+      Write-Host "  $Message"
+    }
+  }
 }
 
 function Write-Result {
@@ -39,18 +74,18 @@ function Write-Result {
 
 function Get-RequestData {
   $request = Get-Content -Raw -Path $RequestPath | ConvertFrom-Json
-  Write-Info "Loaded prompt enhancement request."
+  Write-Info "Loaded prompt enhancement request." -Tone Ok
   return $request
 }
 
 function Get-ImageBase64 {
   if (-not (Test-Path -LiteralPath $ImagePath)) {
-    Write-Info "No input image found for prompt enhancement."
+    Write-Info "No input image found for prompt enhancement." -Tone Warn
     return $null
   }
 
   $imageBytes = [System.IO.File]::ReadAllBytes($ImagePath)
-  Write-Info ("Loaded input PNG (" + $imageBytes.Length + " bytes).")
+  Write-Info ("Loaded input PNG (" + $imageBytes.Length + " bytes).") -Tone Ok
   return [System.Convert]::ToBase64String($imageBytes)
 }
 
@@ -111,7 +146,7 @@ try {
     throw "Pixel Engine did not return an enhanced prompt."
   }
 
-  Write-Info "Received enhanced prompt."
+  Write-Info "Received enhanced prompt." -Tone Ok
   Write-Result -Ok $true -Prompt $prompt.Trim()
 }
 catch {
@@ -120,7 +155,7 @@ catch {
     $message = "Unknown Pixel Engine prompt enhancement error."
   }
 
-  Write-Info ("Error: " + $message)
+  Write-Info $message -Tone Err
   Write-Result -Ok $false -ErrorMessage $message
   exit 1
 }
