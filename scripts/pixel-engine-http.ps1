@@ -153,7 +153,6 @@ function New-PixelEngineHeaders {
 
   return @{
     Authorization = "Bearer $ApiKey"
-    "Content-Type" = "application/json"
   }
 }
 
