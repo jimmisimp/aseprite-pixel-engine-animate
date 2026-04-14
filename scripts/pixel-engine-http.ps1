@@ -2,8 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$RequestPath,
 
-  [Parameter(Mandatory = $true)]
-  [string]$ImagePath,
+  [string]$ImagePath = "",
 
   [Parameter(Mandatory = $true)]
   [string]$ResultPath,
@@ -16,6 +15,12 @@ $ErrorActionPreference = "Stop"
 
 $script:PeProgressId = 0
 $script:PePollTick = 0
+
+try {
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
+catch {
+}
 
 function Stop-PeProgress {
   Write-Progress -Id $script:PeProgressId -Activity " " -Completed
@@ -108,6 +113,23 @@ function Write-Result {
   [System.IO.File]::WriteAllText($ResultPath, $json, $utf8NoBom)
 }
 
+function Write-BodyDump {
+  param(
+    [string]$Json
+  )
+
+  $sanitized = [regex]::Replace($Json, '"image"\s*:\s*"([^"]{80})[^"]*"', {
+    param($m)
+    $full = $m.Value
+    $total = ($full -split '"image"')[1].Length - 5
+    '"image":"' + $m.Groups[1].Value + '...<' + $total + ' chars total>"'
+  })
+
+  $dumpPath = $ResultPath + ".body-sent.json"
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($dumpPath, $sanitized, $utf8NoBom)
+}
+
 function Get-RequestData {
   $request = Get-Content -Raw -Path $RequestPath | ConvertFrom-Json
   Write-Info "Loaded request file." -Tone Ok
@@ -131,11 +153,10 @@ function New-PixelEngineHeaders {
 
   return @{
     Authorization = "Bearer $ApiKey"
-    "Content-Type" = "application/json"
   }
 }
 
-function New-RequestBody {
+function New-AnimateRequestBody {
   param(
     $Request,
     [string]$ImageBase64
@@ -172,23 +193,125 @@ function New-RequestBody {
   return $body
 }
 
-function Submit-AnimateJob {
+function New-KeyframeRequestBody {
+  param(
+    $Request
+  )
+
+  $frameList = @($Request.frames)
+  if ($frameList.Count -lt 1) {
+    throw "Keyframe request must include at least one frame."
+  }
+
+  $frames = @()
+  foreach ($kf in $frameList) {
+    $path = [string]$kf.image_path
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) {
+      throw ("Keyframe image not found: " + $path)
+    }
+
+    $imageBytes = [System.IO.File]::ReadAllBytes($path)
+    $b64 = [System.Convert]::ToBase64String($imageBytes)
+    Write-Info ("Loaded keyframe index " + $kf.index + " (" + $imageBytes.Length + " bytes).") -Tone Ok
+
+    $frameObj = [ordered]@{
+      index = [int]$kf.index
+      image = $b64
+    }
+
+    if ($null -ne $kf.strength) {
+      $frameObj.strength = [double]$kf.strength
+    }
+
+    $frames += $frameObj
+  }
+
+  $body = [ordered]@{
+    prompt = $Request.prompt
+    render_mode = "pixel"
+    total_frames = [int]$Request.total_frames
+    frames = $frames
+    output_format = "spritesheet"
+  }
+
+  if ($Request.negative_prompt -and $Request.negative_prompt.Trim().Length -gt 0) {
+    $body.negative_prompt = $Request.negative_prompt
+  }
+
+  if ($Request.matte_color -and $Request.matte_color.Trim().Length -gt 0) {
+    $body.matte_color = $Request.matte_color
+  }
+
+  if ($null -ne $Request.seed) {
+    $body.seed = [long]$Request.seed
+  }
+
+  $body.pixel_config = [ordered]@{}
+  if ($null -ne $Request.palette) {
+    $body.pixel_config.palette = @($Request.palette)
+    Write-Info ("Using sprite palette with " + $body.pixel_config.palette.Count + " colors.")
+  }
+  elseif ($null -ne $Request.colors) {
+    $body.pixel_config.colors = [int]$Request.colors
+    Write-Info ("Using generated palette size " + $body.pixel_config.colors + ".")
+  }
+  else {
+    throw "Keyframe request requires palette colors or a palette size."
+  }
+
+  return $body
+}
+
+function Submit-Job {
   param(
     $Headers,
-    $Body
+    $Body,
+    [string]$Endpoint
   )
 
   Write-PeProgress `
-    -Status "Submitting animation job..." `
-    -CurrentOperation "Sending image and prompt to Pixel Engine" `
+    -Status "Submitting job..." `
+    -CurrentOperation ("POST " + $Endpoint) `
     -PercentComplete 0
 
-  $response = Invoke-RestMethod `
-    -Method Post `
-    -Uri "https://api.pixelengine.ai/functions/v1/animate" `
-    -Headers $Headers `
-    -Body ($Body | ConvertTo-Json -Depth 10)
+  $jsonBody = $Body | ConvertTo-Json -Depth 10
+  Write-BodyDump -Json $jsonBody
 
+  $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
+  $req = [System.Net.HttpWebRequest]::Create($Endpoint)
+  $req.Method = "POST"
+  $req.ContentType = "application/json; charset=utf-8"
+  $req.ContentLength = $bodyBytes.Length
+  foreach ($key in $Headers.Keys) {
+    $req.Headers.Add($key, $Headers[$key])
+  }
+
+  $reqStream = $req.GetRequestStream()
+  $reqStream.Write($bodyBytes, 0, $bodyBytes.Length)
+  $reqStream.Close()
+
+  $responseBody = $null
+  try {
+    $webResponse = $req.GetResponse()
+    $reader = New-Object System.IO.StreamReader($webResponse.GetResponseStream())
+    $responseBody = $reader.ReadToEnd()
+    $reader.Close()
+    $webResponse.Close()
+  }
+  catch [System.Net.WebException] {
+    $errorResponse = $_.Exception.Response
+    if ($errorResponse) {
+      $reader = New-Object System.IO.StreamReader($errorResponse.GetResponseStream())
+      $errorBody = $reader.ReadToEnd()
+      $reader.Close()
+      $errorResponse.Close()
+      $statusCode = [int]$errorResponse.StatusCode
+      throw "API returned HTTP $statusCode : $errorBody"
+    }
+    throw
+  }
+
+  $response = $responseBody | ConvertFrom-Json
   if (-not $response.api_job_id) {
     throw "Pixel Engine did not return an api_job_id."
   }
@@ -315,10 +438,32 @@ function Save-OutputImage {
 
 try {
   $request = Get-RequestData
-  $imageBase64 = Get-ImageBase64
   $headers = New-PixelEngineHeaders -ApiKey $request.api_key
-  $body = New-RequestBody -Request $request -ImageBase64 $imageBase64
-  $submitResponse = Submit-AnimateJob -Headers $headers -Body $body
+
+  $mode = "animate"
+  if ($request.mode) {
+    $mode = [string]$request.mode
+  }
+
+  if ($mode -eq "keyframes") {
+    $body = New-KeyframeRequestBody -Request $request
+    $submitResponse = Submit-Job `
+      -Headers $headers `
+      -Body $body `
+      -Endpoint "https://api.pixelengine.ai/functions/v1/keyframes"
+  }
+  else {
+    if (-not $ImagePath -or -not (Test-Path -LiteralPath $ImagePath)) {
+      throw "Input image not found: $ImagePath"
+    }
+    $imageBase64 = Get-ImageBase64
+    $body = New-AnimateRequestBody -Request $request -ImageBase64 $imageBase64
+    $submitResponse = Submit-Job `
+      -Headers $headers `
+      -Body $body `
+      -Endpoint "https://api.pixelengine.ai/functions/v1/animate"
+  }
+
   $jobId = [string]$submitResponse.api_job_id
   $job = Wait-ForJobCompletion `
     -AuthorizationHeader $headers.Authorization `
