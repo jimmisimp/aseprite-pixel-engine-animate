@@ -8,13 +8,62 @@ param(
   [string]$ResultPath,
 
   [Parameter(Mandatory = $true)]
-  [string]$OutputImagePath
+  [string]$OutputImagePath,
+
+  [string]$LogPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $script:PeProgressId = 0
 $script:PePollTick = 0
+$script:PeLogPath = $LogPath
+
+function Write-HelperLog {
+  param(
+    [string]$Message
+  )
+
+  if (-not $script:PeLogPath) {
+    return
+  }
+
+  try {
+    $parent = Split-Path -Parent -Path $script:PeLogPath
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+      New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $line = (Get-Date).ToString("o") + " " + $Message
+    Add-Content -LiteralPath $script:PeLogPath -Encoding UTF8 -Value $line
+  }
+  catch {
+  }
+}
+
+function Start-HelperLog {
+  if (-not $script:PeLogPath) {
+    return
+  }
+
+  try {
+    $parent = Split-Path -Parent -Path $script:PeLogPath
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+      New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    Set-Content -LiteralPath $script:PeLogPath -Encoding UTF8 -Value ((Get-Date).ToString("o") + " Pixel Engine HTTP helper started.")
+    Write-HelperLog ("PowerShell " + $PSVersionTable.PSVersion.ToString())
+    Write-HelperLog ("RequestPath=" + $RequestPath)
+    Write-HelperLog ("ImagePath=" + $ImagePath)
+    Write-HelperLog ("ResultPath=" + $ResultPath)
+    Write-HelperLog ("OutputImagePath=" + $OutputImagePath)
+  }
+  catch {
+  }
+}
+
+Start-HelperLog
 
 try {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -33,6 +82,7 @@ function Write-Info {
     [string]$Tone = "Default"
   )
 
+  Write-HelperLog $Message
   $label = "Pixel Engine"
   switch ($Tone) {
     "Dim" {
@@ -128,6 +178,43 @@ function Write-BodyDump {
   $dumpPath = $ResultPath + ".body-sent.json"
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($dumpPath, $sanitized, $utf8NoBom)
+}
+
+function Get-PositiveIntOrDefault {
+  param(
+    $Value,
+    [int]$Default,
+    [int]$Min,
+    [int]$Max
+  )
+
+  $parsed = $Default
+  if ($null -ne $Value) {
+    try {
+      $parsed = [int]$Value
+    }
+    catch {
+      $parsed = $Default
+    }
+  }
+
+  if ($parsed -lt $Min) {
+    return $Min
+  }
+
+  if ($parsed -gt $Max) {
+    return $Max
+  }
+
+  return $parsed
+}
+
+function Convert-TimeoutMilliseconds {
+  param(
+    [int]$Seconds
+  )
+
+  return [Math]::Min(2147483, [Math]::Max(1, $Seconds)) * 1000
 }
 
 function Get-RequestData {
@@ -266,7 +353,8 @@ function Submit-Job {
   param(
     $Headers,
     $Body,
-    [string]$Endpoint
+    [string]$Endpoint,
+    [int]$RequestTimeoutSeconds
   )
 
   Write-PeProgress `
@@ -282,6 +370,9 @@ function Submit-Job {
   $req.Method = "POST"
   $req.ContentType = "application/json; charset=utf-8"
   $req.ContentLength = $bodyBytes.Length
+  $timeoutMs = Convert-TimeoutMilliseconds -Seconds $RequestTimeoutSeconds
+  $req.Timeout = $timeoutMs
+  $req.ReadWriteTimeout = $timeoutMs
   foreach ($key in $Headers.Keys) {
     $req.Headers.Add($key, $Headers[$key])
   }
@@ -362,20 +453,25 @@ function Get-DisplayJobStatus {
 function Get-JobUpdate {
   param(
     [string]$AuthorizationHeader,
-    [string]$JobId
+    [string]$JobId,
+    [int]$RequestTimeoutSeconds
   )
 
   return Invoke-RestMethod `
     -Method Get `
     -Uri ("https://api.pixelengine.ai/functions/v1/jobs?id=" + [uri]::EscapeDataString($JobId)) `
-    -Headers @{ Authorization = $AuthorizationHeader }
+    -Headers @{ Authorization = $AuthorizationHeader } `
+    -TimeoutSec $RequestTimeoutSeconds
 }
 
 function Wait-ForJobCompletion {
   param(
     [string]$AuthorizationHeader,
     [string]$JobId,
-    [string]$InitialStatus
+    [string]$InitialStatus,
+    [int]$RequestTimeoutSeconds,
+    [int]$JobTimeoutSeconds,
+    [int]$PollIntervalSeconds
   )
 
   $status = $InitialStatus
@@ -385,6 +481,7 @@ function Wait-ForJobCompletion {
 
   $spin = @("|", "/", "-", "\")
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $sleepSeconds = [Math]::Max(1, $PollIntervalSeconds)
 
   while ($true) {
     $ch = $spin[$script:PePollTick % $spin.Length]
@@ -398,9 +495,16 @@ function Wait-ForJobCompletion {
       -CurrentOperation ($ch + " Waiting for Pixel Engine (job " + $shortId + "...)") `
       -PercentComplete $pct
 
-    Start-Sleep -Seconds 3
+    if ($sw.Elapsed.TotalSeconds -ge $JobTimeoutSeconds) {
+      throw ("Timed out waiting for Pixel Engine after " + $JobTimeoutSeconds + " seconds.")
+    }
 
-    $job = Get-JobUpdate -AuthorizationHeader $AuthorizationHeader -JobId $JobId
+    Start-Sleep -Seconds $sleepSeconds
+
+    $job = Get-JobUpdate `
+      -AuthorizationHeader $AuthorizationHeader `
+      -JobId $JobId `
+      -RequestTimeoutSeconds $RequestTimeoutSeconds
     $status = [string]$job.status
     $progress = Get-ProgressPercent -Job $job
 
@@ -416,7 +520,8 @@ function Wait-ForJobCompletion {
 
 function Save-OutputImage {
   param(
-    $Job
+    $Job,
+    [int]$RequestTimeoutSeconds
   )
 
   if (-not $Job.output.url) {
@@ -428,7 +533,7 @@ function Save-OutputImage {
     -CurrentOperation $OutputImagePath `
     -PercentComplete 95
 
-  Invoke-WebRequest -Uri $Job.output.url -OutFile $OutputImagePath
+  Invoke-WebRequest -Uri $Job.output.url -OutFile $OutputImagePath -TimeoutSec $RequestTimeoutSeconds
   Write-Info ("Saved spritesheet to " + $OutputImagePath) -Tone Ok
 
   if ($null -ne $Job.output.metadata) {
@@ -438,6 +543,21 @@ function Save-OutputImage {
 
 try {
   $request = Get-RequestData
+  $requestTimeoutSeconds = Get-PositiveIntOrDefault `
+    -Value $request.request_timeout_seconds `
+    -Default 30 `
+    -Min 1 `
+    -Max 3600
+  $jobTimeoutSeconds = Get-PositiveIntOrDefault `
+    -Value $request.job_timeout_seconds `
+    -Default 300 `
+    -Min 1 `
+    -Max 86400
+  $pollIntervalSeconds = Get-PositiveIntOrDefault `
+    -Value $request.poll_interval_seconds `
+    -Default 3 `
+    -Min 1 `
+    -Max 60
   $headers = New-PixelEngineHeaders -ApiKey $request.api_key
 
   $mode = "animate"
@@ -450,7 +570,8 @@ try {
     $submitResponse = Submit-Job `
       -Headers $headers `
       -Body $body `
-      -Endpoint "https://api.pixelengine.ai/functions/v1/keyframes"
+      -Endpoint "https://api.pixelengine.ai/functions/v1/keyframes" `
+      -RequestTimeoutSeconds $requestTimeoutSeconds
   }
   else {
     if (-not $ImagePath -or -not (Test-Path -LiteralPath $ImagePath)) {
@@ -461,16 +582,20 @@ try {
     $submitResponse = Submit-Job `
       -Headers $headers `
       -Body $body `
-      -Endpoint "https://api.pixelengine.ai/functions/v1/animate"
+      -Endpoint "https://api.pixelengine.ai/functions/v1/animate" `
+      -RequestTimeoutSeconds $requestTimeoutSeconds
   }
 
   $jobId = [string]$submitResponse.api_job_id
   $job = Wait-ForJobCompletion `
     -AuthorizationHeader $headers.Authorization `
     -JobId $jobId `
-    -InitialStatus ([string]$submitResponse.status)
+    -InitialStatus ([string]$submitResponse.status) `
+    -RequestTimeoutSeconds $requestTimeoutSeconds `
+    -JobTimeoutSeconds $jobTimeoutSeconds `
+    -PollIntervalSeconds $pollIntervalSeconds
 
-  Save-OutputImage -Job $job
+  Save-OutputImage -Job $job -RequestTimeoutSeconds $requestTimeoutSeconds
 
   Write-PeProgress -Status "Done" -CurrentOperation "Animation saved" -PercentComplete 100
   Write-Info "Animation complete." -Tone Ok

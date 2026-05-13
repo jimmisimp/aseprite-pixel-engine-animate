@@ -62,6 +62,21 @@ return function(config, support)
       end
     end
 
+    if #colors == 0 then
+      support.fail("The active sprite palette did not contain any colors.")
+    end
+
+    if #colors > config.MAX_PALETTE_COLORS then
+      support.fail(
+        "The active sprite palette has "
+          .. #colors
+          .. " unique colors; Pixel Engine accepts at most "
+          .. config.MAX_PALETTE_COLORS
+          .. " palette colors."
+      )
+    end
+
+    support.log("Using sprite palette with " .. #colors .. " unique colors.")
     return colors
   end
 
