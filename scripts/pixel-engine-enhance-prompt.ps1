@@ -6,10 +6,58 @@ param(
   [string]$ImagePath,
 
   [Parameter(Mandatory = $true)]
-  [string]$ResultPath
+  [string]$ResultPath,
+
+  [string]$LogPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+$script:PeLogPath = $LogPath
+
+function Write-HelperLog {
+  param(
+    [string]$Message
+  )
+
+  if (-not $script:PeLogPath) {
+    return
+  }
+
+  try {
+    $parent = Split-Path -Parent -Path $script:PeLogPath
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+      New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $line = (Get-Date).ToString("o") + " " + $Message
+    Add-Content -LiteralPath $script:PeLogPath -Encoding UTF8 -Value $line
+  }
+  catch {
+  }
+}
+
+function Start-HelperLog {
+  if (-not $script:PeLogPath) {
+    return
+  }
+
+  try {
+    $parent = Split-Path -Parent -Path $script:PeLogPath
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+      New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    Set-Content -LiteralPath $script:PeLogPath -Encoding UTF8 -Value ((Get-Date).ToString("o") + " Pixel Engine prompt helper started.")
+    Write-HelperLog ("PowerShell " + $PSVersionTable.PSVersion.ToString())
+    Write-HelperLog ("RequestPath=" + $RequestPath)
+    Write-HelperLog ("ImagePath=" + $ImagePath)
+    Write-HelperLog ("ResultPath=" + $ResultPath)
+  }
+  catch {
+  }
+}
+
+Start-HelperLog
 
 function Write-Info {
   param(
@@ -18,6 +66,7 @@ function Write-Info {
     [string]$Tone = "Default"
   )
 
+  Write-HelperLog $Message
   $label = "Pixel Engine"
   switch ($Tone) {
     "Dim" {
@@ -78,6 +127,35 @@ function Get-RequestData {
   return $request
 }
 
+function Get-PositiveIntOrDefault {
+  param(
+    $Value,
+    [int]$Default,
+    [int]$Min,
+    [int]$Max
+  )
+
+  $parsed = $Default
+  if ($null -ne $Value) {
+    try {
+      $parsed = [int]$Value
+    }
+    catch {
+      $parsed = $Default
+    }
+  }
+
+  if ($parsed -lt $Min) {
+    return $Min
+  }
+
+  if ($parsed -gt $Max) {
+    return $Max
+  }
+
+  return $parsed
+}
+
 function Get-ImageBase64 {
   if (-not (Test-Path -LiteralPath $ImagePath)) {
     Write-Info "No input image found for prompt enhancement." -Tone Warn
@@ -124,22 +202,32 @@ function New-RequestBody {
 function Invoke-EnhancePrompt {
   param(
     $Headers,
-    $Body
+    $Body,
+    [int]$RequestTimeoutSeconds
   )
 
   return Invoke-RestMethod `
     -Method Post `
     -Uri "https://api.pixelengine.ai/functions/v1/enhance-prompt" `
     -Headers $Headers `
-    -Body ($Body | ConvertTo-Json -Depth 10)
+    -Body ($Body | ConvertTo-Json -Depth 10) `
+    -TimeoutSec $RequestTimeoutSeconds
 }
 
 try {
   $request = Get-RequestData
+  $requestTimeoutSeconds = Get-PositiveIntOrDefault `
+    -Value $request.request_timeout_seconds `
+    -Default 30 `
+    -Min 1 `
+    -Max 3600
   $imageBase64 = Get-ImageBase64
   $headers = New-PixelEngineHeaders -ApiKey $request.api_key
   $body = New-RequestBody -Request $request -ImageBase64 $imageBase64
-  $response = Invoke-EnhancePrompt -Headers $headers -Body $body
+  $response = Invoke-EnhancePrompt `
+    -Headers $headers `
+    -Body $body `
+    -RequestTimeoutSeconds $requestTimeoutSeconds
   $prompt = [string]$response.enhanced_prompt
 
   if (-not $prompt -or $prompt.Trim().Length -eq 0) {

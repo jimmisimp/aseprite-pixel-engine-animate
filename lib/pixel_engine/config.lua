@@ -11,13 +11,18 @@ return {
   ENV_USE_CUSTOM_ENHANCE = "USE_CUSTOM_ENHANCE",
   ENV_OPENAI_API_KEY = "OPENAI_API_KEY",
   ENV_OPENAI_MODEL = "OPENAI_MODEL",
-  HELPER_SCRIPT_NAME = "scripts/pixel-engine-http.ps1",
-  ENHANCE_HELPER_SCRIPT_NAME = "scripts/pixel-engine-enhance-prompt.ps1",
-  OPENAI_HELPER_SCRIPT_NAME = "scripts/openai-prompt-enhance.ps1",
+  ENV_REQUEST_TIMEOUT_SECONDS = "PIXEL_ENGINE_REQUEST_TIMEOUT_SECONDS",
+  ENV_JOB_TIMEOUT_SECONDS = "PIXEL_ENGINE_JOB_TIMEOUT_SECONDS",
+  ENV_POLL_INTERVAL_SECONDS = "PIXEL_ENGINE_POLL_INTERVAL_SECONDS",
+  DEFAULT_REQUEST_TIMEOUT_SECONDS = 30,
+  DEFAULT_JOB_TIMEOUT_SECONDS = 300,
+  DEFAULT_POLL_INTERVAL_SECONDS = 8,
+  MAX_POLL_INTERVAL_SECONDS = 20,
   DEFAULT_FRAMES = 8,
   DEFAULT_FPS = 8,
   DEFAULT_MATTE_COLOR = "#EE00FF",
   DEFAULT_PALETTE_SIZE = "24",
+  MAX_PALETTE_COLORS = 256,
   PALETTE_SIZE_OPTIONS = { "8", "12", "16", "20", "24", "32", "48", "60" },
   KEYFRAME_TOTAL_MIN = 3,
   KEYFRAME_TOTAL_MAX = 20,
@@ -28,6 +33,8 @@ return {
     enhance_request = "enhance-request.json",
     enhance_result = "enhance-result.json",
     result = "result.json",
-    output = "output.png"
+    output = "output.png",
+    helper_log = "helper.log",
+    enhance_helper_log = "enhance-helper.log"
   }
 }

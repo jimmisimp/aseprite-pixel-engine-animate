@@ -8,7 +8,7 @@ An Aseprite extension that sends the active frame to the [Pixel Engine](https://
 ## Requirements
 
 - [Aseprite](https://www.aseprite.org/) with extensions enabled
-- Windows with `powershell.exe` available
+- Windows with `curl.exe` available. Current Windows builds include `curl.exe` in `C:\Windows\System32`.
 - A [Pixel Engine API key](https://pixelengine.ai/account?tab=api)
 
 ## Install
@@ -24,6 +24,15 @@ ASEPRITE_KEY=pe_sk_your_key_here
 
 You can also paste the API key into the dialog. The extension remembers the last values you used in Aseprite's local preferences.
 
+Optional timeout settings can be added to `.env`:
+
+```env
+PIXEL_ENGINE_REQUEST_TIMEOUT_SECONDS=30
+PIXEL_ENGINE_JOB_TIMEOUT_SECONDS=300
+PIXEL_ENGINE_POLL_INTERVAL_SECONDS=8
+```
+
+`PIXEL_ENGINE_REQUEST_TIMEOUT_SECONDS` applies to API requests and downloads. `PIXEL_ENGINE_JOB_TIMEOUT_SECONDS` is the maximum time to wait for a Pixel Engine generation job. `PIXEL_ENGINE_POLL_INTERVAL_SECONDS` controls how often the job status is checked; it defaults to 8 seconds and backs off during longer jobs to reduce console-window flashes.
 
 ## Prompt Enhancement
 
@@ -67,9 +76,19 @@ OPENAI_MODEL=gpt-5-mini-2025-08-07
 6. Click `Generate`.
 
 > **Note** 
-> You will be asked to allow the extension to run PowerShell scripts on the first run.
+> Aseprite may ask for permission to run external commands on the first run. The active request path uses Windows `curl.exe`.
 
-Both commands export frames to temporary PNGs, wait for Pixel Engine to finish, download the spritesheet, and import each frame into a new layer named `Animation`.
+Both commands export frames to temporary PNGs, open a modeless progress dialog, wait for Pixel Engine to finish, download the spritesheet, and import each frame into a new layer named `Animation`.
+
+While a job is running, each status check launches Windows `curl.exe`, so a console window may briefly appear. The progress dialog shows the current phase, job ID/status, and includes a cancel button for local polling/import.
+
+## Troubleshooting
+
+If Windows shows `cmd.exe` or PowerShell startup error `0xc0000142`, the shell or PowerShell failed before the old helper script could run. The active Animate, Keyframes, and prompt-enhancement paths now avoid PowerShell and call Windows `curl.exe` directly from Lua.
+
+Aseprite's documented `app.os` API provides OS metadata, not a direct HTTPS client. Its documented no-shell IPC option is `WebSocket`, which would require a separate local process.
+
+On request failures, API-key request files are deleted from the temp directory. Redacted diagnostics such as `result.json` and `result.json.body-sent.json` may be kept so you can inspect the API status and request shape without exposing keys.
 
 ## Notes
 
@@ -77,8 +96,9 @@ Both commands export frames to temporary PNGs, wait for Pixel Engine to finish, 
 - The aspect ratio must stay between `1:2` and `2:1`.
 - Animate frame count must be an even number between `2` and `16`.
 - Keyframes total frames must be between `3` and `20`.
+- `Use index colors` sends the sprite palette directly and validates that it contains at most 256 unique colors.
 - Matte color defaults to `#EE00FF`, but you can change it from the color picker in the dialog.
-- Temporary files are cleaned up automatically after a successful run. On failure, the temp directory is preserved for debugging.
+- Temporary files are cleaned up automatically after a successful run. On failure, secret-bearing request files are removed and redacted diagnostics are preserved for debugging.
 
 ## Repo layout
 
@@ -86,6 +106,4 @@ Both commands export frames to temporary PNGs, wait for Pixel Engine to finish, 
 - `lib/pixel_engine/`: Lua modules for config, sprite handling, and command flow
 - `lib/openai/`: Lua modules for prompt enhancement config and helper
 - `lib/utils/`: Lua modules for shared helpers
-- `scripts/pixel-engine-http.ps1`: PowerShell helper that calls the Pixel Engine API
-- `scripts/pixel-engine-enhance-prompt.ps1`: PowerShell helper that calls Pixel Engine's `/enhance-prompt` endpoint
-- `scripts/openai-prompt-enhance.ps1`: PowerShell helper for the optional OpenAI prompt enhancement flow
+- `scripts/`: legacy PowerShell helpers retained for reference; the active plugin path uses Lua plus `curl.exe`
