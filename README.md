@@ -78,9 +78,9 @@ OPENAI_MODEL=gpt-5-mini-2025-08-07
 > **Note** 
 > Aseprite may ask for permission to run external commands on the first run. The active request path uses Windows `curl.exe`.
 
-Both commands export frames to temporary PNGs, wait for Pixel Engine to finish, download the spritesheet, and import each frame into a new layer named `Animation`.
+Both commands export frames to temporary PNGs, open a modeless progress dialog, wait for Pixel Engine to finish, download the spritesheet, and import each frame into a new layer named `Animation`.
 
-While a job is running, each status check launches Windows `curl.exe`, so a console window may briefly appear. The plugin polls less frequently during longer jobs to reduce that flashing.
+While a job is running, each status check launches Windows `curl.exe`, so a console window may briefly appear. The progress dialog shows the current phase, job ID/status, and includes a cancel button for local polling/import.
 
 ## Troubleshooting
 

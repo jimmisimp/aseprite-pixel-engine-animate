@@ -259,11 +259,9 @@ function New-AnimateRequestBody {
 
   if ($null -ne $Request.palette) {
     $body.pixel_config.palette = @($Request.palette)
-    Write-Info ("Using sprite palette with " + $body.pixel_config.palette.Count + " colors.")
   }
   elseif ($null -ne $Request.colors) {
     $body.pixel_config.colors = [int]$Request.colors
-    Write-Info ("Using generated palette size " + $body.pixel_config.colors + ".")
   }
   else {
     throw "Request must include either palette colors or a palette size."

@@ -55,13 +55,6 @@ return function(config)
     return "curl.exe", false
   end
 
-  function support.sleep_seconds(seconds)
-    local duration = math.max(1, math.floor(tonumber(seconds) or 1))
-    local start_time = os.time()
-    while os.time() - start_time < duration do
-    end
-  end
-
   function support.read_text_file_if_exists(path)
     if not path or not app.fs.isFile(path) then
       return nil

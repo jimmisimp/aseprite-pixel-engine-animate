@@ -1,5 +1,6 @@
 return function(config, support, sprite_ops, prompt_enhance)
   local command = {}
+  local active_jobs = {}
 
   local function is_valid_palette_size(value)
     local string_value = tostring(value)
@@ -252,8 +253,7 @@ return function(config, support, sprite_ops, prompt_enhance)
         return false, last_error
       end
 
-      append_helper_log(log_path, "curl process startup failed with 0xC0000142; retrying without launching a sleep helper.")
-      support.sleep_seconds(attempt * 2)
+      append_helper_log(log_path, "curl process startup failed with 0xC0000142; retrying.")
     end
 
     return false, last_error or "curl failed to start."
@@ -376,37 +376,176 @@ return function(config, support, sprite_ops, prompt_enhance)
     return fallback or "Pixel Engine request failed."
   end
 
-  local function run_curl_helper(temp_dir, request_path, image_path, result_path, output_path, log_path)
-    local request = read_json_file(request_path, "Pixel Engine request")
-    local timeout = tonumber(request.request_timeout_seconds) or config.DEFAULT_REQUEST_TIMEOUT_SECONDS
-    local job_timeout = tonumber(request.job_timeout_seconds) or config.DEFAULT_JOB_TIMEOUT_SECONDS
-    local poll_interval = tonumber(request.poll_interval_seconds) or config.DEFAULT_POLL_INTERVAL_SECONDS
+  local function has_active_job()
+    for _, job in ipairs(active_jobs) do
+      if job.timer and job.timer.isRunning then
+        return true
+      end
+    end
+
+    return false
+  end
+
+  local function remove_active_job(state)
+    for i = #active_jobs, 1, -1 do
+      if active_jobs[i] == state then
+        table.remove(active_jobs, i)
+      end
+    end
+  end
+
+  local function truncate_status(value, max_length)
+    local text = support.normalize_json_text(value or "")
+    text = text:gsub("\n", " ")
+    local limit = tonumber(max_length) or 72
+    if #text <= limit then
+      return text
+    end
+
+    return text:sub(1, limit - 3) .. "..."
+  end
+
+  local function set_progress_status(state, status, detail)
+    state.status_text = status or state.status_text or ""
+    state.detail_text = detail or state.detail_text or ""
+
+    if not state.dialog then
+      return
+    end
+
+    pcall(function()
+      state.dialog:modify{ id = "status", text = truncate_status(state.status_text, 76) }
+      state.dialog:modify{ id = "detail", text = truncate_status(state.detail_text, 76) }
+    end)
+  end
+
+  local function close_progress_dialog(state)
+    if state.dialog then
+      pcall(function()
+        state.dialog:close()
+      end)
+      state.dialog = nil
+    end
+  end
+
+  local function stop_generation_timer(state)
+    if state.timer and state.timer.isRunning then
+      state.timer:stop()
+    end
+  end
+
+  local function generation_cleanup_files(state)
+    local paths = state.paths or {}
+    local cleanup_files = {
+      paths.request,
+      paths.input,
+      paths.enhance_request,
+      paths.enhance_result,
+      paths.result,
+      paths.output,
+      paths.helper_log,
+      paths.enhance_helper_log
+    }
+
+    if state.keyframe_paths then
+      for i = 2, #state.keyframe_paths do
+        table.insert(cleanup_files, state.keyframe_paths[i])
+      end
+    end
+
+    return cleanup_files
+  end
+
+  local function show_generation_failure(state, message)
+    support.log(state.failure_log_prefix .. ": " .. tostring(message))
+    support.remove_sensitive_failure_files(state.paths)
+
+    local paths = state.paths or {}
+    local body_dump = paths.result and (paths.result .. ".body-sent.json") or nil
+    local lines = { tostring(message) }
+    if paths.result and app.fs.isFile(paths.result) then
+      table.insert(lines, "")
+      table.insert(lines, "Diagnostic result saved to:")
+      table.insert(lines, paths.result)
+    end
+    if body_dump and app.fs.isFile(body_dump) then
+      table.insert(lines, "")
+      table.insert(lines, "Sent body saved to:")
+      table.insert(lines, body_dump)
+    end
+    if paths.helper_log and app.fs.isFile(paths.helper_log) then
+      table.insert(lines, "")
+      table.insert(lines, "Helper log saved to:")
+      table.insert(lines, paths.helper_log)
+    end
+
+    app.alert{ title = state.title, text = lines }
+  end
+
+  local function show_generation_success(state, summary)
+    support.cleanup_temp_dir(state.temp_dir, generation_cleanup_files(state))
+
+    local alert_text = {
+      "Imported " .. summary.imported_frames .. " frames into layer '" .. summary.layer_name .. "'.",
+      "Job ID: " .. tostring(summary.api_job_id)
+    }
+
+    if summary.enhanced_prompt and summary.enhanced_prompt ~= "" then
+      table.insert(alert_text, "Enhanced prompt:")
+
+      for _, line in ipairs(support.wrap_text(summary.enhanced_prompt, 64)) do
+        table.insert(alert_text, line)
+      end
+    end
+
+    app.alert{
+      title = state.title,
+      text = alert_text
+    }
+  end
+
+  local function write_failure_result(state, payload)
+    support.write_text_file(state.paths.result, json.encode(payload))
+    support.fail(payload.error or "Pixel Engine request failed.")
+  end
+
+  local function prepare_curl_job(state)
+    local request = read_json_file(state.paths.request, "Pixel Engine request")
     local mode = tostring(request.mode or "animate")
     local endpoint = "https://api.pixelengine.ai/functions/v1/animate"
     local body = nil
 
-    support.write_text_file(log_path, "curl helper started\nmode=" .. mode .. "\n")
+    state.request = request
+    state.timeout_seconds = tonumber(request.request_timeout_seconds) or config.DEFAULT_REQUEST_TIMEOUT_SECONDS
+    state.job_timeout_seconds = tonumber(request.job_timeout_seconds) or config.DEFAULT_JOB_TIMEOUT_SECONDS
+    state.poll_interval_seconds = tonumber(request.poll_interval_seconds) or config.DEFAULT_POLL_INTERVAL_SECONDS
+
+    support.write_text_file(state.paths.helper_log, "curl helper started\nmode=" .. mode .. "\n")
     if mode == "keyframes" then
       endpoint = "https://api.pixelengine.ai/functions/v1/keyframes"
       body = build_curl_keyframe_body(request)
     else
-      body = build_curl_animate_body(request, image_path)
+      body = build_curl_animate_body(request, state.paths.input)
     end
 
-    write_body_dump(result_path, body)
+    write_body_dump(state.paths.result, body)
+    state.curl_endpoint = endpoint
+    state.curl_body = body
+  end
 
-    local submit_body_path = app.fs.joinPath(temp_dir, "curl-submit-body.json")
-    local submit_response_path = app.fs.joinPath(temp_dir, "curl-submit-response.json")
-    write_json_file(submit_body_path, body)
+  local function submit_curl_job(state)
+    local submit_body_path = app.fs.joinPath(state.temp_dir, "curl-submit-body.json")
+    local submit_response_path = app.fs.joinPath(state.temp_dir, "curl-submit-response.json")
+    write_json_file(submit_body_path, state.curl_body)
 
-    local ok, error_message = run_curl(temp_dir, {
+    local ok, error_message = run_curl(state.temp_dir, {
       method = "POST",
-      url = endpoint,
-      headers = make_auth_headers(request.api_key),
+      url = state.curl_endpoint,
+      headers = make_auth_headers(state.request.api_key),
       body_path = submit_body_path,
       output_path = submit_response_path,
-      timeout_seconds = timeout
-    }, log_path)
+      timeout_seconds = state.timeout_seconds
+    }, state.paths.helper_log)
     support.remove_if_exists(submit_body_path)
 
     local submit_response = nil
@@ -416,119 +555,134 @@ return function(config, support, sprite_ops, prompt_enhance)
     support.remove_if_exists(submit_response_path)
 
     if not ok then
-      support.write_text_file(result_path, json.encode{
+      write_failure_result(state, {
         ok = false,
-        error = curl_api_error(submit_response, error_message) .. "\nLog: " .. tostring(log_path)
+        error = curl_api_error(submit_response, error_message) .. "\nLog: " .. tostring(state.paths.helper_log)
       })
-      return read_json_file(result_path, "Pixel Engine result")
     end
 
     if not submit_response or not submit_response.api_job_id then
-      support.write_text_file(result_path, json.encode{
+      write_failure_result(state, {
         ok = false,
         error = "Pixel Engine did not return an api_job_id."
       })
-      return read_json_file(result_path, "Pixel Engine result")
     end
 
-    local job_id = tostring(submit_response.api_job_id)
-    local start_time = os.time()
-    local job = submit_response
-    local poll_count = 0
-    while true do
-      if tostring(job.status or "") == "success" then
-        break
-      end
-      if tostring(job.status or "") == "failure" then
-        support.write_text_file(result_path, json.encode{
-          ok = false,
-          error = curl_api_error(job, "Generation failed."),
-          api_job_id = job_id,
-          status = job.status
-        })
-        return read_json_file(result_path, "Pixel Engine result")
-      end
-      if os.time() - start_time >= job_timeout then
-        support.write_text_file(result_path, json.encode{
-          ok = false,
-          error = "Timed out waiting for Pixel Engine after " .. job_timeout .. " seconds.",
-          api_job_id = job_id,
-          status = job.status
-        })
-        return read_json_file(result_path, "Pixel Engine result")
-      end
+    state.api_job_id = tostring(submit_response.api_job_id)
+    state.job_started_at = os.time()
+    state.job = submit_response
+    state.poll_count = 0
+    state.next_poll_at = os.time() + state.poll_interval_seconds
+  end
 
-      poll_count = poll_count + 1
-      support.sleep_seconds(poll_interval)
-      if poll_count >= 3 and poll_interval < config.MAX_POLL_INTERVAL_SECONDS then
-        poll_interval = math.min(config.MAX_POLL_INTERVAL_SECONDS, poll_interval + 2)
-      end
+  local function poll_curl_job(state)
+    local job = state.job or {}
+    local status = tostring(job.status or "queued")
 
-      local job_response_path = app.fs.joinPath(temp_dir, "curl-job-response.json")
-      ok, error_message = run_curl(temp_dir, {
-        method = "GET",
-        url = "https://api.pixelengine.ai/functions/v1/jobs?id=" .. job_id,
-        headers = { "Authorization: Bearer " .. tostring(request.api_key or "") },
-        output_path = job_response_path,
-        timeout_seconds = timeout
-      }, log_path)
-      if app.fs.isFile(job_response_path) then
-        job = json.decode(support.read_text_file(job_response_path)) or job
-      end
-      support.remove_if_exists(job_response_path)
-
-      if not ok then
-        support.write_text_file(result_path, json.encode{
-          ok = false,
-          error = tostring(error_message) .. "\nLog: " .. tostring(log_path),
-          api_job_id = job_id,
-          status = job.status
-        })
-        return read_json_file(result_path, "Pixel Engine result")
-      end
+    if status == "success" then
+      state.phase = "download"
+      return
     end
-
-    if not job.output or not job.output.url then
-      support.write_text_file(result_path, json.encode{
+    if status == "failure" then
+      write_failure_result(state, {
         ok = false,
-        error = "Pixel Engine job succeeded but no download URL was returned.",
-        api_job_id = job_id,
+        error = curl_api_error(job, "Generation failed."),
+        api_job_id = state.api_job_id,
         status = job.status
       })
-      return read_json_file(result_path, "Pixel Engine result")
+    end
+    if os.time() - state.job_started_at >= state.job_timeout_seconds then
+      write_failure_result(state, {
+        ok = false,
+        error = "Timed out waiting for Pixel Engine after " .. state.job_timeout_seconds .. " seconds.",
+        api_job_id = state.api_job_id,
+        status = job.status
+      })
     end
 
-    ok, error_message = run_curl(temp_dir, {
+    if os.time() < state.next_poll_at then
+      set_progress_status(
+        state,
+        "Waiting for Pixel Engine",
+        "Job " .. state.api_job_id .. " is " .. status .. "."
+      )
+      return
+    end
+
+    state.poll_count = state.poll_count + 1
+    set_progress_status(
+      state,
+      "Checking generation status",
+      "Poll " .. state.poll_count .. " for job " .. state.api_job_id .. "."
+    )
+
+    local job_response_path = app.fs.joinPath(state.temp_dir, "curl-job-response.json")
+    local ok, error_message = run_curl(state.temp_dir, {
       method = "GET",
-      url = tostring(job.output.url),
-      output_path = output_path,
-      timeout_seconds = timeout
-    }, log_path)
+      url = "https://api.pixelengine.ai/functions/v1/jobs?id=" .. state.api_job_id,
+      headers = { "Authorization: Bearer " .. tostring(state.request.api_key or "") },
+      output_path = job_response_path,
+      timeout_seconds = state.timeout_seconds
+    }, state.paths.helper_log)
+    if app.fs.isFile(job_response_path) then
+      state.job = json.decode(support.read_text_file(job_response_path)) or state.job
+    end
+    support.remove_if_exists(job_response_path)
 
     if not ok then
-      support.write_text_file(result_path, json.encode{
+      write_failure_result(state, {
         ok = false,
-        error = tostring(error_message) .. "\nLog: " .. tostring(log_path),
-        api_job_id = job_id,
-        status = job.status
+        error = tostring(error_message) .. "\nLog: " .. tostring(state.paths.helper_log),
+        api_job_id = state.api_job_id,
+        status = state.job and state.job.status
       })
-      return read_json_file(result_path, "Pixel Engine result")
     end
 
-    support.write_text_file(result_path, json.encode{
+    if state.poll_count >= 3 and state.poll_interval_seconds < config.MAX_POLL_INTERVAL_SECONDS then
+      state.poll_interval_seconds = math.min(config.MAX_POLL_INTERVAL_SECONDS, state.poll_interval_seconds + 2)
+    end
+    state.next_poll_at = os.time() + state.poll_interval_seconds
+  end
+
+  local function download_curl_output(state)
+    local job = state.job or {}
+    if not job.output or not job.output.url then
+      write_failure_result(state, {
+        ok = false,
+        error = "Pixel Engine job succeeded but no download URL was returned.",
+        api_job_id = state.api_job_id,
+        status = job.status
+      })
+    end
+
+    local ok, error_message = run_curl(state.temp_dir, {
+      method = "GET",
+      url = tostring(job.output.url),
+      output_path = state.paths.output,
+      timeout_seconds = state.timeout_seconds
+    }, state.paths.helper_log)
+
+    if not ok then
+      write_failure_result(state, {
+        ok = false,
+        error = tostring(error_message) .. "\nLog: " .. tostring(state.paths.helper_log),
+        api_job_id = state.api_job_id,
+        status = job.status
+      })
+    end
+
+    support.write_text_file(state.paths.result, json.encode{
       ok = true,
       error = nil,
-      api_job_id = job_id,
+      api_job_id = state.api_job_id,
       status = job.status,
       content_type = job.output.content_type,
-      output_image_path = output_path,
+      output_image_path = state.paths.output,
       metadata = job.output.metadata or {
-        frame_count = tonumber(request.output_frames) or tonumber(request.total_frames),
+        frame_count = tonumber(state.request.output_frames) or tonumber(state.request.total_frames),
         fps = config.DEFAULT_FPS
       }
     })
-
-    return read_json_file(result_path, "Pixel Engine result")
   end
 
   local function build_temp_paths(temp_dir, plugin_path)
@@ -807,7 +961,237 @@ return function(config, support, sprite_ops, prompt_enhance)
     return values
   end
 
+  local function create_progress_dialog(state)
+    local dialog = Dialog{
+      title = state.title,
+      onclose = function()
+        state.cancelled = true
+      end
+    }
+
+    dialog:newrow{ always=true }
+    dialog:label{ id = "status", label = "Status", text = "Preparing" }
+    dialog:label{ id = "detail", label = "Detail", text = " " }
+    dialog:button{
+      id = "cancel",
+      text = "Cancel",
+      onclick = function()
+        state.cancelled = true
+        set_progress_status(state, "Cancelling", "The remote Pixel Engine job may continue server-side.")
+        pcall(function()
+          dialog:modify{ id = "cancel", enabled = false }
+        end)
+      end
+    }
+    dialog:show{ wait=false }
+
+    state.dialog = dialog
+    set_progress_status(state, "Preparing", "Starting " .. state.mode .. " generation.")
+  end
+
+  local function finish_generation_job(state, ok, result_or_error)
+    local was_cancelled = state.cancelled
+    stop_generation_timer(state)
+    remove_active_job(state)
+    close_progress_dialog(state)
+
+    if was_cancelled and not ok then
+      support.remove_sensitive_failure_files(state.paths)
+      app.alert{
+        title = state.title,
+        text = {
+          "Generation cancelled.",
+          "If a Pixel Engine job was already submitted, it may still complete server-side.",
+          state.api_job_id and ("Job ID: " .. tostring(state.api_job_id)) or ""
+        }
+      }
+      return
+    end
+
+    if not ok then
+      show_generation_failure(state, result_or_error)
+      return
+    end
+
+    show_generation_success(state, result_or_error)
+  end
+
+  local function prepare_generation_request(state)
+    local pixel_engine_prompt = state.pixel_engine_prompt or state.values.prompt
+    local palette_value = state.values.palette_size
+    if state.values.use_index_colors then
+      palette_value = sprite_ops.collect_palette_colors(state.sprite)
+    end
+
+    if state.mode == "animate" then
+      support.write_text_file(
+        state.paths.request,
+        build_request_json(
+          state.values.api_key,
+          pixel_engine_prompt,
+          state.values.negative_prompt,
+          state.values.output_frames,
+          state.values.matte_color,
+          state.values.use_index_colors,
+          palette_value,
+          state.timeout_settings
+        )
+      )
+    else
+      local frames_payload = {}
+      for i = 1, state.keyframe_count do
+        table.insert(frames_payload, {
+          index = state.indices[i],
+          image_path = state.keyframe_paths[i]
+        })
+      end
+
+      support.write_text_file(
+        state.paths.request,
+        build_keyframe_request_json(
+          state.values.api_key,
+          pixel_engine_prompt,
+          state.values.negative_prompt,
+          state.values.total_frames,
+          state.values.matte_color,
+          state.values.use_index_colors,
+          palette_value,
+          frames_payload,
+          state.timeout_settings
+        )
+      )
+    end
+  end
+
+  local function advance_generation_job(state)
+    if state.cancelled then
+      support.fail("cancelled")
+    end
+
+    if state.phase == "render" then
+      if state.mode == "animate" then
+        set_progress_status(state, "Rendering source frame", "Exporting the current sprite frame.")
+        sprite_ops.render_active_frame(state.sprite, state.source_frame_number, state.paths.input)
+      else
+        set_progress_status(state, "Rendering keyframes", "Exporting " .. state.keyframe_count .. " source frames.")
+        for i = 1, state.keyframe_count do
+          local out_path
+          if i == 1 then
+            out_path = state.paths.input
+          else
+            out_path = app.fs.joinPath(state.temp_dir, "keyframe-" .. i .. ".png")
+          end
+          state.keyframe_paths[i] = out_path
+          sprite_ops.render_active_frame(state.sprite, i, out_path)
+        end
+      end
+      state.phase = "enhance"
+      return
+    end
+
+    if state.phase == "enhance" then
+      state.pixel_engine_prompt = state.values.prompt
+      if state.values.enhance_prompt then
+        set_progress_status(state, "Enhancing prompt", "Sending prompt enhancement request.")
+        state.pixel_engine_prompt = prompt_enhance.enhance(state.plugin_path, {
+          request = state.paths.enhance_request,
+          result = state.paths.enhance_result,
+          log = state.paths.enhance_helper_log,
+          image = state.paths.input
+        }, state.values.prompt, state.values.api_key)
+      end
+      state.phase = "request"
+      return
+    end
+
+    if state.phase == "request" then
+      set_progress_status(state, "Preparing request", "Building Pixel Engine request JSON.")
+      prepare_generation_request(state)
+      prepare_curl_job(state)
+      state.phase = "submit"
+      return
+    end
+
+    if state.phase == "submit" then
+      set_progress_status(state, "Submitting generation", "Starting the Pixel Engine job.")
+      submit_curl_job(state)
+      set_progress_status(state, "Submitted", "Job " .. state.api_job_id .. " is " .. tostring(state.job.status or "queued") .. ".")
+      state.phase = "poll"
+      return
+    end
+
+    if state.phase == "poll" then
+      poll_curl_job(state)
+      return
+    end
+
+    if state.phase == "download" then
+      set_progress_status(state, "Downloading result", "Saving generated image.")
+      download_curl_output(state)
+      state.result = read_json_file(state.paths.result, "Pixel Engine result")
+      state.phase = "import"
+      return
+    end
+
+    if state.phase == "import" then
+      set_progress_status(state, "Importing spritesheet", "Creating frames in Aseprite.")
+      local expected_frames = state.mode == "animate" and state.values.output_frames or state.values.total_frames
+      local layer_name, imported_frames = sprite_ops.import_spritesheet(
+        state.sprite,
+        state.source_frame_number,
+        state.paths.output,
+        state.result.metadata or {
+          frame_count = expected_frames,
+          fps = config.DEFAULT_FPS
+        }
+      )
+
+      state.summary = {
+        layer_name = layer_name,
+        imported_frames = imported_frames,
+        api_job_id = state.result.api_job_id,
+        enhanced_prompt = state.values.enhance_prompt and state.pixel_engine_prompt or nil
+      }
+      state.phase = "done"
+      return
+    end
+
+    if state.phase == "done" then
+      finish_generation_job(state, true, state.summary)
+    end
+  end
+
+  local function start_generation_job(state)
+    create_progress_dialog(state)
+    table.insert(active_jobs, state)
+
+    state.timer = Timer{
+      interval = 0.25,
+      ontick = function()
+        if state.busy then
+          return
+        end
+
+        state.busy = true
+        local ok, result_or_error = pcall(function()
+          advance_generation_job(state)
+        end)
+        state.busy = false
+
+        if not ok then
+          finish_generation_job(state, false, result_or_error)
+        end
+      end
+    }
+    state.timer:start()
+  end
+
   local function run_animate_generation(plugin)
+    if has_active_job() then
+      app.alert{ title = config.COMMAND_TITLE, text = "A Pixel Engine generation is already running." }
+      return
+    end
+
     local sprite = app.sprite
     local current_frame = app.frame
     local preferences = plugin.preferences
@@ -833,107 +1217,27 @@ return function(config, support, sprite_ops, prompt_enhance)
 
     local temp_dir = support.make_temp_dir()
     local paths = build_temp_paths(temp_dir, plugin.path)
-    local ok, result_or_error = pcall(function()
-      sprite_ops.render_active_frame(sprite, current_frame.frameNumber, paths.input)
-
-      local pixel_engine_prompt = values.prompt
-      if values.enhance_prompt then
-        pixel_engine_prompt = prompt_enhance.enhance(plugin.path, {
-          request = paths.enhance_request,
-          result = paths.enhance_result,
-          log = paths.enhance_helper_log,
-          image = paths.input
-        }, values.prompt, values.api_key)
-      end
-
-      local palette_value = values.palette_size
-      if values.use_index_colors then
-        palette_value = sprite_ops.collect_palette_colors(sprite)
-      end
-
-      support.write_text_file(
-        paths.request,
-        build_request_json(
-          values.api_key,
-          pixel_engine_prompt,
-          values.negative_prompt,
-          values.output_frames,
-          values.matte_color,
-          values.use_index_colors,
-          palette_value,
-          timeout_settings
-        )
-      )
-
-      local result = run_curl_helper(temp_dir, paths.request, paths.input, paths.result, paths.output, paths.helper_log)
-      local layer_name, imported_frames = sprite_ops.import_spritesheet(
-        sprite,
-        current_frame.frameNumber,
-        paths.output,
-        result.metadata or {
-          frame_count = values.output_frames,
-          fps = config.DEFAULT_FPS
-        }
-      )
-
-      return {
-        layer_name = layer_name,
-        imported_frames = imported_frames,
-        api_job_id = result.api_job_id,
-        enhanced_prompt = values.enhance_prompt and pixel_engine_prompt or nil
-      }
-    end)
-
-    if not ok then
-      support.log("Generation failed: " .. tostring(result_or_error))
-      support.remove_sensitive_failure_files(paths)
-      local body_dump = paths.result .. ".body-sent.json"
-      local lines = { tostring(result_or_error) }
-      if app.fs.isFile(paths.result) then
-        table.insert(lines, "")
-        table.insert(lines, "Diagnostic result saved to:")
-        table.insert(lines, paths.result)
-      end
-      if app.fs.isFile(body_dump) then
-        table.insert(lines, "")
-        table.insert(lines, "Sent body saved to:")
-        table.insert(lines, body_dump)
-      end
-      app.alert{ title = config.COMMAND_TITLE, text = lines }
-      return
-    end
-
-    support.cleanup_temp_dir(temp_dir, {
-      paths.request,
-      paths.input,
-      paths.enhance_request,
-      paths.enhance_result,
-      paths.result,
-      paths.output,
-      paths.helper_log,
-      paths.enhance_helper_log
-    })
-
-    local alert_text = {
-      "Imported " .. result_or_error.imported_frames .. " frames into layer '" .. result_or_error.layer_name .. "'.",
-      "Job ID: " .. tostring(result_or_error.api_job_id)
-    }
-
-    if result_or_error.enhanced_prompt and result_or_error.enhanced_prompt ~= "" then
-      table.insert(alert_text, "Enhanced prompt:")
-
-      for _, line in ipairs(support.wrap_text(result_or_error.enhanced_prompt, 64)) do
-        table.insert(alert_text, line)
-      end
-    end
-
-    app.alert{
+    start_generation_job{
       title = config.COMMAND_TITLE,
-      text = alert_text
+      failure_log_prefix = "Generation failed",
+      mode = "animate",
+      phase = "render",
+      plugin_path = plugin.path,
+      sprite = sprite,
+      source_frame_number = current_frame.frameNumber,
+      values = values,
+      timeout_settings = timeout_settings,
+      temp_dir = temp_dir,
+      paths = paths
     }
   end
 
   local function run_keyframe_generation(plugin)
+    if has_active_job() then
+      app.alert{ title = config.COMMAND_TITLE_KEYFRAMES, text = "A Pixel Engine generation is already running." }
+      return
+    end
+
     local sprite = app.sprite
     local current_frame = app.frame
     local preferences = plugin.preferences
@@ -964,127 +1268,21 @@ return function(config, support, sprite_ops, prompt_enhance)
 
     local temp_dir = support.make_temp_dir()
     local paths = build_temp_paths(temp_dir, plugin.path)
-    local keyframe_paths = {}
-    local ok, result_or_error = pcall(function()
-      for i = 1, keyframe_count do
-        local out_path
-        if i == 1 then
-          out_path = paths.input
-        else
-          out_path = app.fs.joinPath(temp_dir, "keyframe-" .. i .. ".png")
-        end
-        keyframe_paths[i] = out_path
-        sprite_ops.render_active_frame(sprite, i, out_path)
-      end
-
-      local pixel_engine_prompt = values.prompt
-      if values.enhance_prompt then
-        pixel_engine_prompt = prompt_enhance.enhance(plugin.path, {
-          request = paths.enhance_request,
-          result = paths.enhance_result,
-          log = paths.enhance_helper_log,
-          image = paths.input
-        }, values.prompt, values.api_key)
-      end
-
-      local palette_value = values.palette_size
-      if values.use_index_colors then
-        palette_value = sprite_ops.collect_palette_colors(sprite)
-      end
-
-      local frames_payload = {}
-      for i = 1, keyframe_count do
-        table.insert(frames_payload, {
-          index = indices[i],
-          image_path = keyframe_paths[i]
-        })
-      end
-
-      support.write_text_file(
-        paths.request,
-        build_keyframe_request_json(
-          values.api_key,
-          pixel_engine_prompt,
-          values.negative_prompt,
-          values.total_frames,
-          values.matte_color,
-          values.use_index_colors,
-          palette_value,
-          frames_payload,
-          timeout_settings
-        )
-      )
-
-      local result = run_curl_helper(temp_dir, paths.request, paths.input, paths.result, paths.output, paths.helper_log)
-      local layer_name, imported_frames = sprite_ops.import_spritesheet(
-        sprite,
-        current_frame.frameNumber,
-        paths.output,
-        result.metadata or {
-          frame_count = values.total_frames,
-          fps = config.DEFAULT_FPS
-        }
-      )
-
-      return {
-        layer_name = layer_name,
-        imported_frames = imported_frames,
-        api_job_id = result.api_job_id,
-        enhanced_prompt = values.enhance_prompt and pixel_engine_prompt or nil
-      }
-    end)
-
-    if not ok then
-      support.log("Keyframe generation failed: " .. tostring(result_or_error))
-      support.remove_sensitive_failure_files(paths)
-      local body_dump = paths.result .. ".body-sent.json"
-      local lines = { tostring(result_or_error) }
-      if app.fs.isFile(paths.result) then
-        table.insert(lines, "")
-        table.insert(lines, "Diagnostic result saved to:")
-        table.insert(lines, paths.result)
-      end
-      if app.fs.isFile(body_dump) then
-        table.insert(lines, "")
-        table.insert(lines, "Sent body saved to:")
-        table.insert(lines, body_dump)
-      end
-      app.alert{ title = config.COMMAND_TITLE_KEYFRAMES, text = lines }
-      return
-    end
-
-    local cleanup_files = {
-      paths.request,
-      paths.input,
-      paths.enhance_request,
-      paths.enhance_result,
-      paths.result,
-      paths.output,
-      paths.helper_log,
-      paths.enhance_helper_log
-    }
-    for i = 2, keyframe_count do
-      table.insert(cleanup_files, keyframe_paths[i])
-    end
-
-    support.cleanup_temp_dir(temp_dir, cleanup_files)
-
-    local alert_text = {
-      "Imported " .. result_or_error.imported_frames .. " frames into layer '" .. result_or_error.layer_name .. "'.",
-      "Job ID: " .. tostring(result_or_error.api_job_id)
-    }
-
-    if result_or_error.enhanced_prompt and result_or_error.enhanced_prompt ~= "" then
-      table.insert(alert_text, "Enhanced prompt:")
-
-      for _, line in ipairs(support.wrap_text(result_or_error.enhanced_prompt, 64)) do
-        table.insert(alert_text, line)
-      end
-    end
-
-    app.alert{
+    start_generation_job{
       title = config.COMMAND_TITLE_KEYFRAMES,
-      text = alert_text
+      failure_log_prefix = "Keyframe generation failed",
+      mode = "keyframes",
+      phase = "render",
+      plugin_path = plugin.path,
+      sprite = sprite,
+      source_frame_number = current_frame.frameNumber,
+      values = values,
+      timeout_settings = timeout_settings,
+      temp_dir = temp_dir,
+      paths = paths,
+      keyframe_count = keyframe_count,
+      keyframe_paths = {},
+      indices = indices
     }
   end
 
@@ -1121,7 +1319,7 @@ return function(config, support, sprite_ops, prompt_enhance)
         run_animate_generation(plugin)
       end,
       onenabled = function()
-        return app.sprite ~= nil and app.frame ~= nil
+        return app.sprite ~= nil and app.frame ~= nil and not has_active_job()
       end
     }
 
@@ -1133,12 +1331,18 @@ return function(config, support, sprite_ops, prompt_enhance)
         run_keyframe_generation(plugin)
       end,
       onenabled = function()
-        return app.sprite ~= nil and app.frame ~= nil
+        return app.sprite ~= nil and app.frame ~= nil and not has_active_job()
       end
     }
   end
 
   function command.exit(plugin)
+    for _, job in ipairs(active_jobs) do
+      stop_generation_timer(job)
+      close_progress_dialog(job)
+      support.remove_sensitive_failure_files(job.paths)
+    end
+    active_jobs = {}
   end
 
   return command
